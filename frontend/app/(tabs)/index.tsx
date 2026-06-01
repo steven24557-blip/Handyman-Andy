@@ -13,6 +13,7 @@ import { useRouter } from 'expo-router';
 import { Plus, LogOut } from 'lucide-react-native';
 import FadeInView from '@/src/components/FadeInView';
 import { createAudioPlayer } from 'expo-audio';
+import { useSubscription } from '@/src/lib/subscription';
 
 import JobCard from '@/src/components/JobCard';
 import { api } from '@/src/lib/api';
@@ -30,6 +31,7 @@ const FILTERS: { key: string; label: string }[] = [
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
+  const { showPaywall, refresh: refreshSub } = useSubscription();
   const router = useRouter();
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,7 +101,12 @@ export default function Dashboard() {
       });
       fetchJobs();
     } catch (e: any) {
-      Alert.alert('Could not create job', e?.message || '');
+      if (e?.status === 402) {
+        showPaywall(e.message || 'Free tier capped at 3 active jobs.');
+        await refreshSub();
+      } else {
+        Alert.alert('Could not create job', e?.message || '');
+      }
     }
   };
 
@@ -111,6 +118,9 @@ export default function Dashboard() {
           <Text style={styles.userName} numberOfLines={1}>{user?.name || 'Operator'}</Text>
         </View>
         <View style={styles.headerActions}>
+          <Pressable testID="dashboard-voice-btn" onPress={() => router.push('/job/voice-intake')} style={styles.iconBtn}>
+            <Mic size={18} color={colors.primary} strokeWidth={2.6} />
+          </Pressable>
           <Pressable testID="dashboard-new-job-btn" onPress={createDemo} style={styles.iconBtn}>
             <Plus size={18} color={colors.primary} strokeWidth={3} />
           </Pressable>

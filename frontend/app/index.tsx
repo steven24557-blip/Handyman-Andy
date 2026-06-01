@@ -16,8 +16,8 @@ export default function Index() {
 
   return (
     <View testID="splash-screen" style={styles.container}>
-      <Text style={styles.brand}>J.P.</Text>
-      <Text style={styles.tag}>PRO TOOLS & DIAGNOSTICS</Text>
+      <Text style={styles.brand}>ANDY</Text>
+      <Text style={styles.tag}>JOB SITE ASSISTANT</Text>
       <ActivityIndicator color={colors.primary} style={{ marginTop: 24 }} />
     </View>
   );

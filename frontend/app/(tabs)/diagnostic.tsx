@@ -132,7 +132,13 @@ export default function DiagnosticScreen() {
       const res = await api.diagnostic(capturedB64);
       setResult(res);
     } catch (e: any) {
-      Alert.alert('AI failed', e?.message || 'Try again');
+      if (e?.status === 402) {
+        const { useSubscription } = await import('@/src/lib/subscription');
+        // dynamic showPaywall handled by parent via Alert fallback for now
+        Alert.alert('Out of free scans', e?.message || 'Upgrade to Pro for unlimited.');
+      } else {
+        Alert.alert('AI failed', e?.message || 'Try again');
+      }
     } finally {
       setAnalyzing(false);
     }

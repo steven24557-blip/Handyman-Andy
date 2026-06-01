@@ -8,6 +8,8 @@ import { View } from 'react-native';
 
 import { useIconFonts } from '@/src/hooks/use-icon-fonts';
 import { AuthProvider } from '@/src/lib/auth';
+import { SubscriptionProvider } from '@/src/lib/subscription';
+import PaywallSheet from '@/src/components/PaywallSheet';
 import { colors } from '@/src/lib/theme';
 
 // Keep the native splash visible from cold start until icon fonts register.
@@ -33,16 +35,19 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SafeAreaProvider>
         <AuthProvider>
-          <StatusBar style="light" />
-          <View style={{ flex: 1, backgroundColor: colors.background }}>
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: colors.background },
-                animation: 'fade',
-              }}
-            />
-          </View>
+          <SubscriptionProvider>
+            <StatusBar style="light" />
+            <View style={{ flex: 1, backgroundColor: colors.background }}>
+              <Stack
+                screenOptions={{
+                  headerShown: false,
+                  contentStyle: { backgroundColor: colors.background },
+                  animation: 'fade',
+                }}
+              />
+              <PaywallSheet />
+            </View>
+          </SubscriptionProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

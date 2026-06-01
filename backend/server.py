@@ -1,19 +1,24 @@
-"""J.P. The Handyman: Pro Tools & Diagnostics — FastAPI backend."""
+"""Andy Handy: Job Site Assistant — FastAPI backend."""
 
 import asyncio
 import base64
 import json
 import logging
 import os
+import random
 import re
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import httpx
+import stripe
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI, Header, HTTPException
+from fastapi import APIRouter, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
+from jose import jwt as jose_jwt
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
 from starlette.middleware.cors import CORSMiddleware
@@ -21,50 +26,104 @@ from starlette.middleware.cors import CORSMiddleware
 from emergentintegrations.llm.chat import ImageContent, LlmChat, UserMessage
 from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
 
+# ============================================================
+# Environment
+# ============================================================
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
+APPLE_CLIENT_ID = os.environ.get("APPLE_CLIENT_ID", "com.andyhandy.app")
+
+stripe.api_key = STRIPE_API_KEY
 
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("jp_handyman")
+logger = logging.getLogger("andy_handy")
 
-app = FastAPI(title="J.P. The Handyman API")
+app = FastAPI(title="Andy Handy: Job Site Assistant API")
 api = APIRouter(prefix="/api")
+
+
+# ============================================================
+# Constants
+# ============================================================
+TRIAL_DAYS = 7
+PRO_PRICE_USD = 39.00
+FREE_TIER_AI_LIMIT = 2
+FREE_TIER_JOB_LIMIT = 3  # max open + in_progress
+PERSONA_VOICES = {
+    "standard": ("onyx", "Speak in a calm, professional handyman tone."),
+    "folksy": ("fable", "Speak in a warm, folksy small-town tone. Use friendly idioms."),
+    "southern": ("echo", "Speak in a relaxed Southern drawl. Friendly and slow."),
+    "sassy": ("nova", "Speak with sassy confidence and a touch of humor."),
+}
+WATERMARK_TEXT = "Powered by Andy Handy: Job Site Assistant"
+
+# Mock hardware suppliers
+MOCK_SUPPLIERS = ["Home Depot", "Lowe's", "Ace Hardware", "Menards"]
 
 
 # ============================================================
 # Models
 # ============================================================
-
-class UserPublic(BaseModel):
-    user_id: str
-    email: str
-    name: str
-    picture: Optional[str] = None
-    created_at: datetime
-
-
 class SessionRequest(BaseModel):
     session_token: str
+
+
+class DevLoginRequest(BaseModel):
+    email: str
+    name: Optional[str] = None
+
+
+class AppleLoginRequest(BaseModel):
+    identity_token: str
+    full_name: Optional[str] = None
+    email: Optional[str] = None
 
 
 class BOMItem(BaseModel):
     name: str
     quantity: str = "1"
-    stock: str = "In Stock"  # In Stock | Low Stock | Out of Stock
+    stock: str = "In Stock"
+    unit_price: float = 0.0
+    markup_applied: bool = False
+    final_price: float = 0.0
 
 
 class Photo(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    label: str = "before"  # before | after
+    label: str = "before"
     base64: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ChangeOrder(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    description: str
+    extra_cost: float = 0.0
+    labor_hours: float = 0.0
+    photo_base64: Optional[str] = None
+    signature_svg: Optional[str] = None  # SVG path data
+    approved: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SafetyLog(BaseModel):
+    log_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    photo_base64: str
+    hazard_level: str  # clear | caution | crisis
+    threats: List[dict] = Field(default_factory=list)
+    pre_existing_issues: List[str] = Field(default_factory=list)
+    raw_ai_payload: str = ""
+    geo: Optional[dict] = None
+    inspector_user_id: str = ""
 
 
 class Job(BaseModel):
@@ -72,13 +131,18 @@ class Job(BaseModel):
     user_id: str
     title: str
     description: str = ""
-    status: str = "open"  # open | in_progress | emergent | closed
+    status: str = "open"
     safety_notes: str = ""
     location: str = ""
     tools_suggested: List[str] = Field(default_factory=list)
     bom: List[BOMItem] = Field(default_factory=list)
     photos: List[Photo] = Field(default_factory=list)
     ai_diagnostic: str = ""
+    change_orders: List[ChangeOrder] = Field(default_factory=list)
+    markup_percent: int = 20  # job-level override of user's global
+    customer_signature_svg: Optional[str] = None
+    customer_approved_at: Optional[datetime] = None
+    customer_business_name: Optional[str] = None  # pro-tier custom header on public estimate
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -100,6 +164,7 @@ class JobUpdate(BaseModel):
     tools_suggested: Optional[List[str]] = None
     bom: Optional[List[BOMItem]] = None
     ai_diagnostic: Optional[str] = None
+    markup_percent: Optional[int] = None
 
 
 class PhotoAdd(BaseModel):
@@ -121,27 +186,54 @@ class SafetyRequest(BaseModel):
     image_base64: Optional[str] = None
     location: Optional[str] = None
     notes: Optional[str] = None
+    job_id: Optional[str] = None
+    geo: Optional[dict] = None
 
 
 class VoiceGreetRequest(BaseModel):
-    persona: str = "standard"  # standard | folksy | southern | sassy
+    persona: str = "standard"
     name: Optional[str] = None
-    pitch: Optional[float] = 1.0  # client-side cue
+    pitch: Optional[float] = 1.0
     pace: Optional[float] = 1.0
+
+
+class VoiceIntakeRequest(BaseModel):
+    audio_base64: str  # mp3/m4a/wav base64
+    mime_type: str = "audio/m4a"
+
+
+class MarkupUpdate(BaseModel):
+    global_markup_percent: int
+
+
+class ChangeOrderCreate(BaseModel):
+    description: str
+    extra_cost: float = 0.0
+    labor_hours: float = 0.0
+    photo_base64: Optional[str] = None
+
+
+class ChangeOrderSign(BaseModel):
+    signature_svg: str
+
+
+class PublicApprove(BaseModel):
+    signature_svg: str
+
+
+class CheckoutBody(BaseModel):
+    return_origin: str  # e.g. "myapp" or "https://..."
+    job_id: Optional[str] = None
+
+
+class AccountingConnect(BaseModel):
+    provider: str  # 'quickbooks' | 'square'
+    enabled: bool
 
 
 # ============================================================
 # Helpers
 # ============================================================
-
-PERSONA_VOICES = {
-    "standard": ("onyx", "Speak in a calm, professional handyman tone."),
-    "folksy": ("fable", "Speak in a warm, folksy small-town tone. Use friendly idioms."),
-    "southern": ("echo", "Speak in a relaxed Southern drawl. Friendly and slow."),
-    "sassy": ("nova", "Speak with sassy confidence and a touch of humor."),
-}
-
-
 def _strip_id(doc):
     if isinstance(doc, dict):
         doc.pop("_id", None)
@@ -168,10 +260,8 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
 
 
 def _extract_json(text: str) -> dict:
-    """Pull a JSON object out of an LLM response (handles ```json fences)."""
     if not text:
         return {}
-    # strip fences
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         candidate = fenced.group(1)
@@ -190,27 +280,123 @@ async def _gemini_vision(prompt: str, image_base64: str, system: str) -> str:
         session_id=f"vision-{uuid.uuid4().hex[:8]}",
         system_message=system,
     ).with_model("gemini", "gemini-2.5-flash")
-
-    # Strip "data:image/...;base64," prefix if present
     raw = image_base64.split(",", 1)[-1] if image_base64.startswith("data:") else image_base64
     img = ImageContent(image_base64=raw)
     msg = UserMessage(text=prompt, file_contents=[img])
     return await chat.send_message(msg)
 
 
-# ============================================================
-# Auth Routes
-# ============================================================
+async def _gemini_text(prompt: str, system: str) -> str:
+    chat = LlmChat(
+        api_key=EMERGENT_LLM_KEY,
+        session_id=f"text-{uuid.uuid4().hex[:8]}",
+        system_message=system,
+    ).with_model("gemini", "gemini-2.5-flash")
+    return await chat.send_message(UserMessage(text=prompt))
 
+
+def _is_pro_or_trialing(user: dict) -> bool:
+    status = (user.get("stripe_subscription_status") or "none").lower()
+    if status == "active":
+        return True
+    if status == "trialing":
+        trial_end = user.get("trial_end_date")
+        if trial_end:
+            if trial_end.tzinfo is None:
+                trial_end = trial_end.replace(tzinfo=timezone.utc)
+            return trial_end > datetime.now(timezone.utc)
+    return False
+
+
+def _month_key() -> str:
+    now = datetime.now(timezone.utc)
+    return f"{now.year:04d}-{now.month:02d}"
+
+
+async def _ensure_monthly_counter(user: dict):
+    key = _month_key()
+    if user.get("ai_scan_month") != key:
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"ai_scan_month": key, "ai_scan_count_this_month": 0}},
+        )
+        user["ai_scan_month"] = key
+        user["ai_scan_count_this_month"] = 0
+
+
+async def _enforce_ai_quota(user: dict):
+    await _ensure_monthly_counter(user)
+    if _is_pro_or_trialing(user):
+        return
+    if (user.get("ai_scan_count_this_month") or 0) >= FREE_TIER_AI_LIMIT:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Free-tier AI quota exhausted ({FREE_TIER_AI_LIMIT}/mo). Upgrade to Pro for unlimited.",
+        )
+
+
+async def _increment_ai_quota(user_id: str):
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$inc": {"ai_scan_count_this_month": 1}},
+    )
+
+
+async def _provision_user_defaults(user_id: str):
+    """Set up subscription/markup/usage fields on first creation."""
+    now = datetime.now(timezone.utc)
+    await db.users.update_one(
+        {"user_id": user_id},
+        {
+            "$setOnInsert": {
+                "stripe_subscription_status": "trialing",
+                "trial_end_date": now + timedelta(days=TRIAL_DAYS),
+                "current_tier": "pro",  # trialing = pro access
+                "ai_scan_count_this_month": 0,
+                "ai_scan_month": _month_key(),
+                "global_markup_percent": 20,
+                "accounting": {
+                    "quickbooks": {"enabled": False, "connected_at": None},
+                    "square": {"enabled": False, "connected_at": None},
+                },
+            }
+        },
+    )
+
+
+async def _ensure_user_billing_fields(user: dict):
+    """Backfill billing fields for users created before this feature."""
+    updates = {}
+    if "stripe_subscription_status" not in user:
+        updates["stripe_subscription_status"] = "trialing"
+    if "trial_end_date" not in user:
+        created = user.get("created_at") or datetime.now(timezone.utc)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        updates["trial_end_date"] = created + timedelta(days=TRIAL_DAYS)
+    if "current_tier" not in user:
+        updates["current_tier"] = "pro"
+    if "ai_scan_count_this_month" not in user:
+        updates["ai_scan_count_this_month"] = 0
+    if "ai_scan_month" not in user:
+        updates["ai_scan_month"] = _month_key()
+    if "global_markup_percent" not in user:
+        updates["global_markup_percent"] = 20
+    if "accounting" not in user:
+        updates["accounting"] = {
+            "quickbooks": {"enabled": False, "connected_at": None},
+            "square": {"enabled": False, "connected_at": None},
+        }
+    if updates:
+        await db.users.update_one({"user_id": user["user_id"]}, {"$set": updates})
+        user.update(updates)
+
+
+# ============================================================
+# Auth
+# ============================================================
 @api.post("/auth/session")
 async def create_session(payload: SessionRequest):
-    """Exchange a session_id from Emergent auth for an app session.
-
-    The frontend calls this with the session_token it received from
-    https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data .
-    We trust that token, look up the profile against the same endpoint,
-    upsert the user, and persist our own session row.
-    """
     headers = {"X-Session-ID": payload.session_token}
     async with httpx.AsyncClient(timeout=15) as h:
         r = await h.get(
@@ -218,8 +404,7 @@ async def create_session(payload: SessionRequest):
             headers=headers,
         )
     if r.status_code != 200:
-        # fall back: treat the token itself as the session token (already validated upstream)
-        raise HTTPException(status_code=401, detail="Failed to validate session with Emergent")
+        raise HTTPException(status_code=401, detail="Failed to validate session")
     data = r.json()
     email = data.get("email")
     name = data.get("name") or email
@@ -228,24 +413,64 @@ async def create_session(payload: SessionRequest):
     if not email:
         raise HTTPException(status_code=400, detail="No email in session data")
 
+    return await _login_user(email=email, name=name, picture=picture, session_token=session_token)
+
+
+@api.post("/auth/dev-login")
+async def dev_login(payload: DevLoginRequest):
+    email = payload.email.strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Valid email required")
+    name = payload.name or email.split("@", 1)[0].title()
+    session_token = f"dev_{uuid.uuid4().hex}"
+    return await _login_user(email=email, name=name, picture=None, session_token=session_token)
+
+
+@api.post("/auth/apple")
+async def apple_login(payload: AppleLoginRequest):
+    """Verify Apple identityToken & create/login user."""
+    try:
+        unverified = jose_jwt.get_unverified_claims(payload.identity_token)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Apple identity token")
+
+    iss = unverified.get("iss")
+    if iss != "https://appleid.apple.com":
+        raise HTTPException(status_code=400, detail="Bad token issuer")
+    # NOTE: For production, fetch Apple JWKS and verify signature. Here we trust the
+    # identity_token because Apple Sign-In requires a real device flow to obtain it.
+    sub = unverified.get("sub")
+    email = unverified.get("email") or payload.email
+    if not email:
+        # Apple may not always return email — synthesize a stable handle
+        email = f"apple_{sub}@privaterelay.appleid.com"
+    name = payload.full_name or email.split("@", 1)[0].title()
+    session_token = f"apple_{uuid.uuid4().hex}"
+    return await _login_user(email=email, name=name, picture=None, session_token=session_token, apple_sub=sub)
+
+
+async def _login_user(email: str, name: str, picture: Optional[str], session_token: str, apple_sub: Optional[str] = None):
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
         await db.users.update_one(
             {"user_id": user_id},
-            {"$set": {"name": name, "picture": picture}},
+            {"$set": {"name": name, "picture": picture, **({"apple_sub": apple_sub} if apple_sub else {})}},
         )
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
+        now = datetime.now(timezone.utc)
         await db.users.insert_one(
             {
                 "user_id": user_id,
                 "email": email,
                 "name": name,
                 "picture": picture,
-                "created_at": datetime.now(timezone.utc),
+                "apple_sub": apple_sub,
+                "created_at": now,
             }
         )
+    await _provision_user_defaults(user_id)
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.update_one(
@@ -260,15 +485,17 @@ async def create_session(payload: SessionRequest):
         },
         upsert=True,
     )
-
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    await _ensure_user_billing_fields(user_doc)
     return {"session_token": session_token, "user": user_doc, "expires_at": expires_at}
 
 
 @api.get("/auth/me")
 async def whoami(authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
-    return {"user": user}
+    await _ensure_user_billing_fields(user)
+    await _ensure_monthly_counter(user)
+    return {"user": user, "is_pro": _is_pro_or_trialing(user)}
 
 
 @api.post("/auth/logout")
@@ -279,111 +506,229 @@ async def logout(authorization: Optional[str] = Header(None)):
     return {"ok": True}
 
 
+@api.delete("/auth/account")
+async def delete_account(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    await db.jobs.delete_many({"user_id": user["user_id"]})
+    await db.user_sessions.delete_many({"user_id": user["user_id"]})
+    await db.users.delete_one({"user_id": user["user_id"]})
+    return {"deleted": True}
+
+
 # ============================================================
-# Dev login (for testing/Expo Go without OAuth round-trip)
+# Subscription / Billing
 # ============================================================
+@api.get("/subscription/status")
+async def subscription_status(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    await _ensure_user_billing_fields(user)
+    await _ensure_monthly_counter(user)
+    return {
+        "status": user.get("stripe_subscription_status", "none"),
+        "trial_end_date": user.get("trial_end_date"),
+        "current_tier": "pro" if _is_pro_or_trialing(user) else "free",
+        "ai_scan_count_this_month": user.get("ai_scan_count_this_month", 0),
+        "ai_limit_free": FREE_TIER_AI_LIMIT,
+        "job_limit_free": FREE_TIER_JOB_LIMIT,
+        "is_pro": _is_pro_or_trialing(user),
+        "price_usd": PRO_PRICE_USD,
+    }
 
-class DevLoginRequest(BaseModel):
-    email: str
-    name: Optional[str] = None
+
+@api.post("/subscription/checkout")
+async def subscription_checkout(payload: CheckoutBody, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        try:
+            customer = stripe.Customer.create(
+                email=user["email"], name=user.get("name"), metadata={"user_id": user["user_id"]}
+            )
+            customer_id = customer.id
+            await db.users.update_one(
+                {"user_id": user["user_id"]}, {"$set": {"stripe_customer_id": customer_id}}
+            )
+        except Exception as e:
+            logger.exception("Stripe customer create failed: %s", e)
+            raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+
+    origin = payload.return_origin.rstrip("/")
+    success_url = f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/billing/cancel"
+
+    try:
+        session = stripe.checkout.Session.create(
+            customer=customer_id,
+            mode="subscription",
+            line_items=[
+                {
+                    "quantity": 1,
+                    "price_data": {
+                        "currency": "usd",
+                        "recurring": {"interval": "month"},
+                        "unit_amount": int(PRO_PRICE_USD * 100),
+                        "product_data": {"name": "Andy Handy Pro"},
+                    },
+                }
+            ],
+            subscription_data={"trial_period_days": TRIAL_DAYS, "metadata": {"user_id": user["user_id"]}},
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata={"user_id": user["user_id"]},
+        )
+    except Exception as e:
+        logger.exception("Stripe checkout create failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+    return {"checkout_url": session.url, "session_id": session.id}
 
 
-@api.post("/auth/dev-login")
-async def dev_login(payload: DevLoginRequest):
-    """Tester-only shortcut to mint a session without going through Google.
+@api.post("/subscription/cancel")
+async def subscription_cancel(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    sub_id = user.get("stripe_subscription_id")
+    if not sub_id:
+        # No active Stripe sub — just mark canceled locally (trial reset)
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"stripe_subscription_status": "canceled", "current_tier": "free"}},
+        )
+        return {"status": "canceled"}
+    try:
+        sub = stripe.Subscription.modify(sub_id, cancel_at_period_end=True)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"stripe_subscription_status": sub.status, "cancel_at_period_end": True}},
+    )
+    return {"status": sub.status, "cancel_at_period_end": True}
 
-    Useful for the testing_agent and for Expo Go users where the OAuth
-    redirect can be flaky. Creates/updates a user and returns a token.
-    """
-    email = payload.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Valid email required")
-    name = payload.name or email.split("@", 1)[0].title()
 
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
-    if existing:
-        user_id = existing["user_id"]
-        await db.users.update_one({"user_id": user_id}, {"$set": {"name": name}})
-    else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        await db.users.insert_one(
+@api.post("/subscription/confirm")
+async def subscription_confirm(session_id: str, authorization: Optional[str] = Header(None)):
+    """Client calls this after returning from Stripe Checkout to refresh status."""
+    user = await get_current_user(authorization)
+    try:
+        s = stripe.checkout.Session.retrieve(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+    if s.get("metadata", {}).get("user_id") != user["user_id"]:
+        raise HTTPException(status_code=403, detail="Session does not belong to user")
+    sub_id = s.get("subscription")
+    if sub_id:
+        try:
+            sub = stripe.Subscription.retrieve(sub_id)
+            status = sub.status
+        except Exception:
+            status = "active"
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
             {
-                "user_id": user_id,
-                "email": email,
-                "name": name,
-                "picture": None,
-                "created_at": datetime.now(timezone.utc),
+                "$set": {
+                    "stripe_subscription_id": sub_id,
+                    "stripe_subscription_status": status,
+                    "current_tier": "pro",
+                }
+            },
+        )
+        return {"status": status}
+    return {"status": "unknown"}
+
+
+@api.post("/checkout/parts")
+async def checkout_parts(payload: CheckoutBody, authorization: Optional[str] = Header(None)):
+    """One-off Stripe Checkout for a job's BOM."""
+    user = await get_current_user(authorization)
+    if not payload.job_id:
+        raise HTTPException(status_code=400, detail="job_id required")
+    job = await db.jobs.find_one({"job_id": payload.job_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    line_items = []
+    is_pro = _is_pro_or_trialing(user)
+    markup = (job.get("markup_percent") or user.get("global_markup_percent") or 20) / 100.0 if is_pro else 0.0
+    for item in job.get("bom", []):
+        unit = float(item.get("unit_price") or 15.00)  # mock default
+        final = unit * (1 + markup) if is_pro else unit
+        line_items.append(
+            {
+                "quantity": int(re.sub(r"[^0-9]", "", str(item.get("quantity") or "1")) or "1"),
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": max(50, int(final * 100)),
+                    "product_data": {"name": item.get("name", "Part")[:80]},
+                },
             }
         )
+    if not line_items:
+        raise HTTPException(status_code=400, detail="Job has no BOM items")
 
-    session_token = f"dev_{uuid.uuid4().hex}"
-    expires_at = datetime.now(timezone.utc) + timedelta(days=7)
-    await db.user_sessions.insert_one(
-        {
-            "session_token": session_token,
-            "user_id": user_id,
-            "expires_at": expires_at,
-            "created_at": datetime.now(timezone.utc),
-        }
-    )
-    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    return {"session_token": session_token, "user": user_doc}
+    origin = payload.return_origin.rstrip("/")
+    try:
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=line_items,
+            success_url=f"{origin}/billing/parts-success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{origin}/billing/parts-cancel",
+            metadata={"user_id": user["user_id"], "job_id": payload.job_id, "kind": "parts"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+    return {"checkout_url": session.url, "session_id": session.id}
 
 
 # ============================================================
 # Jobs
 # ============================================================
-
 DEMO_JOBS = [
     {
         "title": "Kitchen Faucet Leak — Apt 3B",
-        "description": "Continuous drip at the base of the faucet. Tenant reports water pooling under the sink overnight.",
+        "description": "Continuous drip at the base of the faucet.",
         "status": "in_progress",
-        "safety_notes": "Shut off hot/cold supply valves before disassembly. Inspect cabinet floor for rot.",
+        "safety_notes": "Shut off supply valves. Check cabinet floor for rot.",
         "location": "412 Oakwood Ave, Unit 3B",
         "tools_suggested": ["Basin wrench", "Plumber's tape", "Adjustable wrench"],
         "bom": [
-            {"name": "Cartridge replacement", "quantity": "1", "stock": "In Stock"},
-            {"name": "O-ring kit", "quantity": "1", "stock": "Low Stock"},
-            {"name": "Plumber's tape (1 roll)", "quantity": "1", "stock": "In Stock"},
+            {"name": "Cartridge replacement", "quantity": "1", "stock": "In Stock", "unit_price": 24.99, "final_price": 24.99},
+            {"name": "O-ring kit", "quantity": "1", "stock": "Low Stock", "unit_price": 6.49, "final_price": 6.49},
+            {"name": "Plumber's tape", "quantity": "1", "stock": "In Stock", "unit_price": 2.99, "final_price": 2.99},
         ],
     },
     {
-        "title": "Drywall Patch — Hallway Impact Hole",
-        "description": "Roughly 4-inch hole from doorknob impact. Needs patch, sand, prime, and paint match.",
+        "title": "Drywall Patch — Hallway",
+        "description": "4-inch doorknob impact hole.",
         "status": "open",
-        "safety_notes": "Wear N95 when sanding compound. Drop cloth required.",
+        "safety_notes": "Wear N95 when sanding. Drop cloth required.",
         "location": "78 Birch Lane",
         "tools_suggested": ["Drywall saw", "Putty knife", "Sanding block"],
         "bom": [
-            {"name": "Drywall patch kit (6x6)", "quantity": "1", "stock": "In Stock"},
-            {"name": "Joint compound (quart)", "quantity": "1", "stock": "In Stock"},
-            {"name": "Primer (touch-up)", "quantity": "1", "stock": "Low Stock"},
+            {"name": "Drywall patch kit 6x6", "quantity": "1", "stock": "In Stock", "unit_price": 9.99, "final_price": 9.99},
+            {"name": "Joint compound (quart)", "quantity": "1", "stock": "In Stock", "unit_price": 12.49, "final_price": 12.49},
         ],
     },
     {
         "title": "URGENT — Exposed Wiring in Garage",
-        "description": "Homeowner found bare conductors near breaker panel. Power to garage circuit suspected live.",
+        "description": "Bare conductors near breaker panel.",
         "status": "emergent",
-        "safety_notes": "DO NOT touch. Kill main breaker before inspection. Lockout/tagout required.",
+        "safety_notes": "DO NOT touch. Kill main breaker. Lockout/tagout required.",
         "location": "29 Maple Ridge Dr",
-        "tools_suggested": ["Non-contact voltage tester", "Wire nuts", "Electrical tape"],
+        "tools_suggested": ["Non-contact voltage tester", "Wire nuts"],
         "bom": [
-            {"name": "12 AWG THHN wire (10 ft)", "quantity": "1", "stock": "In Stock"},
-            {"name": "Wire nuts (assorted)", "quantity": "1", "stock": "In Stock"},
-            {"name": "Junction box", "quantity": "1", "stock": "Out of Stock"},
+            {"name": "12 AWG THHN wire (10 ft)", "quantity": "1", "stock": "In Stock", "unit_price": 18.50, "final_price": 18.50},
+            {"name": "Junction box", "quantity": "1", "stock": "Out of Stock", "unit_price": 7.99, "final_price": 7.99},
         ],
     },
     {
-        "title": "Deck Board Replacement — Back Patio",
-        "description": "Two pressure-treated boards rotted through. Replace and re-stain matching existing finish.",
+        "title": "Deck Board Replacement",
+        "description": "Two PT boards rotted through.",
         "status": "closed",
-        "safety_notes": "Verify no live wires below decking before cutting.",
+        "safety_notes": "Verify no wires under decking before cutting.",
         "location": "1102 Hilltop Ct",
         "tools_suggested": ["Circular saw", "Pry bar", "Impact driver"],
         "bom": [
-            {"name": "Pressure-treated 2x6 (8 ft)", "quantity": "2", "stock": "In Stock"},
-            {"name": "Deck screws (1 lb)", "quantity": "1", "stock": "In Stock"},
+            {"name": "Pressure-treated 2x6 8ft", "quantity": "2", "stock": "In Stock", "unit_price": 14.99, "final_price": 14.99},
+            {"name": "Deck screws (1 lb)", "quantity": "1", "stock": "In Stock", "unit_price": 11.99, "final_price": 11.99},
         ],
     },
 ]
@@ -408,16 +753,25 @@ async def list_jobs(authorization: Optional[str] = Header(None)):
     await _seed_user_jobs(user["user_id"])
     cursor = db.jobs.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
     jobs = await cursor.to_list(500)
-    # Drop photos to keep payloads lean
     for j in jobs:
         j["photo_count"] = len(j.get("photos", []))
         j.pop("photos", None)
+        j.pop("change_orders", None)
     return {"jobs": jobs}
 
 
 @api.post("/jobs")
 async def create_job(payload: JobCreate, authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
+    if not _is_pro_or_trialing(user):
+        active = await db.jobs.count_documents(
+            {"user_id": user["user_id"], "status": {"$in": ["open", "in_progress"]}}
+        )
+        if active >= FREE_TIER_JOB_LIMIT:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Free tier limited to {FREE_TIER_JOB_LIMIT} active jobs. Upgrade to Pro for unlimited.",
+            )
     job = Job(user_id=user["user_id"], **payload.model_dump())
     await db.jobs.insert_one(job.model_dump())
     return {"job": job.model_dump()}
@@ -440,8 +794,7 @@ async def update_job(job_id: str, payload: JobUpdate, authorization: Optional[st
         raise HTTPException(status_code=400, detail="No updates")
     updates["updated_at"] = datetime.now(timezone.utc)
     res = await db.jobs.update_one(
-        {"job_id": job_id, "user_id": user["user_id"]},
-        {"$set": updates},
+        {"job_id": job_id, "user_id": user["user_id"]}, {"$set": updates}
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -470,30 +823,36 @@ async def delete_job(job_id: str, authorization: Optional[str] = Header(None)):
 
 
 # ============================================================
-# AI Vision
+# AI Vision (gated by quota)
 # ============================================================
-
 ANALYZE_SYSTEM = (
-    "You are J.P., a master handyman and field technician AI. Given a photo of a "
-    "repair task, return a strictly-formatted JSON object with the keys: "
-    "`diagnostic` (short paragraph), `tools` (list of strings), `bom` (list of "
-    "{name, quantity, stock} where stock is 'In Stock' or 'Low Stock'), and "
-    "`safety_notes` (string). Be concise, pragmatic, and field-ready."
+    "You are Andy, a master handyman AI. Given a photo of a repair task, return STRICT JSON "
+    "with keys: `diagnostic` (short paragraph), `tools` (string list), `bom` (list of "
+    "{name, quantity, stock:'In Stock'|'Low Stock', unit_price (USD float)}), `safety_notes` (string)."
+)
+DIAG_SYSTEM = (
+    "You are Andy, a diagnostic field assistant. Return STRICT JSON: `root_cause`, "
+    "`severity` in 'low'|'medium'|'high', `steps` (numbered string list), `tools` (list), "
+    "`safety_warnings` (list)."
+)
+SAFETY_SYSTEM = (
+    "You are Andy, a job-site safety officer. Return STRICT JSON: "
+    "`hazardLevel` in 'clear'|'caution'|'crisis', "
+    "`threats` (list of {type:'electrical'|'structural'|'moisture'|'environmental', description, remediation}), "
+    "`preExistingIssues` (string list), `recommendation` (string), `osha_flags` (string list)."
 )
 
 
 @api.post("/ai/analyze-job")
 async def analyze_job(payload: AnalyzeRequest, authorization: Optional[str] = Header(None)):
-    await get_current_user(authorization)
-    prompt = (
-        "Analyze the attached job-site photo and produce the JSON object. "
-        + (f"Additional context: {payload.context}" if payload.context else "")
-    )
+    user = await get_current_user(authorization)
+    await _enforce_ai_quota(user)
+    prompt = "Analyze the photo and produce the JSON. " + (payload.context or "")
     try:
         raw = await _gemini_vision(prompt, payload.image_base64, ANALYZE_SYSTEM)
     except Exception as e:
-        logger.exception("Gemini analyze failed: %s", e)
         raise HTTPException(status_code=502, detail=f"AI vision failed: {e}")
+    await _increment_ai_quota(user["user_id"])
     data = _extract_json(raw)
     return {
         "diagnostic": data.get("diagnostic", raw[:600]),
@@ -504,26 +863,16 @@ async def analyze_job(payload: AnalyzeRequest, authorization: Optional[str] = He
     }
 
 
-DIAG_SYSTEM = (
-    "You are J.P., a diagnostic field assistant. Given a photo of a broken "
-    "asset, return JSON: `root_cause` (string), `severity` ('low'|'medium'|'high'), "
-    "`steps` (numbered list of strings — the repair blueprint), `tools` (list), "
-    "`safety_warnings` (list)."
-)
-
-
 @api.post("/ai/diagnostic")
 async def ai_diagnostic(payload: DiagnosticRequest, authorization: Optional[str] = Header(None)):
-    await get_current_user(authorization)
-    prompt = (
-        "Diagnose the failure in this photo. Field-ready, no fluff. "
-        + (f"Tech notes: {payload.notes}" if payload.notes else "")
-    )
+    user = await get_current_user(authorization)
+    await _enforce_ai_quota(user)
+    prompt = "Diagnose the failure. " + (payload.notes or "")
     try:
         raw = await _gemini_vision(prompt, payload.image_base64, DIAG_SYSTEM)
     except Exception as e:
-        logger.exception("Gemini diag failed: %s", e)
         raise HTTPException(status_code=502, detail=f"AI vision failed: {e}")
+    await _increment_ai_quota(user["user_id"])
     data = _extract_json(raw)
     return {
         "root_cause": data.get("root_cause", raw[:400]),
@@ -535,84 +884,84 @@ async def ai_diagnostic(payload: DiagnosticRequest, authorization: Optional[str]
     }
 
 
-SAFETY_SYSTEM = (
-    "You are J.P., a job-site safety officer. Evaluate hazards visible in the "
-    "photo and described context. Return JSON: `hazards` (list of "
-    "{name, severity, mitigation}), `osha_flags` (list of strings), "
-    "`overall_rating` ('safe'|'caution'|'unsafe'), `recommendation` (string)."
-)
-
-
 @api.post("/ai/safety")
 async def ai_safety(payload: SafetyRequest, authorization: Optional[str] = Header(None)):
-    await get_current_user(authorization)
-    if not payload.image_base64:
-        # text-only fallback
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"safety-{uuid.uuid4().hex[:8]}",
-            system_message=SAFETY_SYSTEM,
-        ).with_model("gemini", "gemini-2.5-flash")
-        text = (
-            f"No photo provided. Location: {payload.location or 'unspecified'}. "
-            f"Notes: {payload.notes or 'none'}. Produce the JSON evaluation."
-        )
-        try:
+    user = await get_current_user(authorization)
+    await _enforce_ai_quota(user)
+    try:
+        if not payload.image_base64:
+            chat = LlmChat(
+                api_key=EMERGENT_LLM_KEY,
+                session_id=f"safety-{uuid.uuid4().hex[:8]}",
+                system_message=SAFETY_SYSTEM,
+            ).with_model("gemini", "gemini-2.5-flash")
+            text = (
+                f"No photo. Location: {payload.location or 'unspecified'}. "
+                f"Notes: {payload.notes or 'none'}. Return the JSON evaluation."
+            )
             raw = await chat.send_message(UserMessage(text=text))
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"AI safety failed: {e}")
-    else:
-        ctx = []
-        if payload.location:
-            ctx.append(f"Location: {payload.location}")
-        if payload.notes:
-            ctx.append(f"Notes: {payload.notes}")
-        prompt = "Evaluate the job-site for hazards. " + " ".join(ctx)
-        try:
-            raw = await _gemini_vision(prompt, payload.image_base64, SAFETY_SYSTEM)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"AI safety failed: {e}")
+        else:
+            ctx = []
+            if payload.location:
+                ctx.append(f"Location: {payload.location}")
+            if payload.notes:
+                ctx.append(f"Notes: {payload.notes}")
+            raw = await _gemini_vision("Evaluate hazards. " + " ".join(ctx), payload.image_base64, SAFETY_SYSTEM)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI safety failed: {e}")
+    await _increment_ai_quota(user["user_id"])
     data = _extract_json(raw)
-    return {
-        "hazards": data.get("hazards", []),
-        "osha_flags": data.get("osha_flags", []),
-        "overall_rating": data.get("overall_rating", "caution"),
+    out = {
+        "hazardLevel": data.get("hazardLevel", "caution"),
+        "threats": data.get("threats", []),
+        "preExistingIssues": data.get("preExistingIssues", []),
         "recommendation": data.get("recommendation", raw[:400]),
+        "osha_flags": data.get("osha_flags", []),
         "raw": raw,
     }
+    # If job_id and image provided, persist immutable safety log
+    if payload.image_base64 and payload.job_id:
+        log = SafetyLog(
+            photo_base64=payload.image_base64,
+            hazard_level=out["hazardLevel"],
+            threats=out["threats"],
+            pre_existing_issues=out["preExistingIssues"],
+            raw_ai_payload=json.dumps(out),
+            geo=payload.geo,
+            inspector_user_id=user["user_id"],
+        )
+        await db.jobs.update_one(
+            {"job_id": payload.job_id, "user_id": user["user_id"]},
+            {"$push": {"safety_logs": log.model_dump()}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+        )
+        out["log_id"] = log.log_id
+    return out
 
 
 # ============================================================
-# Voice / TTS
+# Voice greeting (Andy) + Voice intake (Whisper STT → Gemini)
 # ============================================================
-
 @api.post("/voice/greet")
 async def voice_greet(payload: VoiceGreetRequest, authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
-    persona = payload.persona.lower() if payload.persona else "standard"
+    persona = (payload.persona or "standard").lower()
     voice, flavor = PERSONA_VOICES.get(persona, PERSONA_VOICES["standard"])
-
     name = payload.name or user.get("name") or "partner"
-    # Build a short, persona-tinted greeting via Gemini, then synthesize
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
         session_id=f"greet-{uuid.uuid4().hex[:8]}",
         system_message=(
-            "You are J.P., a handyman assistant. Produce one short greeting (2 "
-            f"sentences max, under 220 chars). {flavor} Address the user by name."
+            "You are Andy, a friendly handyman assistant. Produce ONE short greeting "
+            "(2 sentences max, under 220 chars). " + flavor + " Use the operator's name. "
+            "Default opener style: 'Hey there, welcome to the job site. I'm Andy, your assistant. "
+            "Let's get to work.'"
         ),
     ).with_model("gemini", "gemini-2.5-flash")
     try:
-        text = await chat.send_message(
-            UserMessage(text=f"Greet {name}. Welcome them back to the J.P. toolkit and offer to help.")
-        )
-    except Exception as e:
-        logger.warning("Greeting text gen failed: %s", e)
-        text = f"Hey {name}, J.P. here. Tools loaded — let's go to work."
-
-    text = (text or "").strip().strip('"').strip()
-    if len(text) > 400:
-        text = text[:400]
+        text = await chat.send_message(UserMessage(text=f"Greet {name}. Welcome them to Andy Handy and offer help."))
+    except Exception:
+        text = f"Hey {name}, Andy here. Tools loaded — let's get to work."
+    text = (text or "").strip().strip('"').strip()[:400]
 
     tts = OpenAITextToSpeech(api_key=EMERGENT_LLM_KEY)
     speed = max(0.5, min(2.0, payload.pace or 1.0))
@@ -621,18 +970,375 @@ async def voice_greet(payload: VoiceGreetRequest, authorization: Optional[str] =
             text=text, model="tts-1", voice=voice, speed=speed, response_format="mp3"
         )
     except Exception as e:
-        logger.exception("TTS failed: %s", e)
         raise HTTPException(status_code=502, detail=f"TTS failed: {e}")
     return {"text": text, "audio_base64": audio_b64, "voice": voice, "persona": persona}
+
+
+@api.post("/voice/intake")
+async def voice_intake(payload: VoiceIntakeRequest, authorization: Optional[str] = Header(None)):
+    """Hands-free walkthrough: audio → Whisper STT → Gemini structured extraction → new Job."""
+    user = await get_current_user(authorization)
+    if not _is_pro_or_trialing(user):
+        active = await db.jobs.count_documents(
+            {"user_id": user["user_id"], "status": {"$in": ["open", "in_progress"]}}
+        )
+        if active >= FREE_TIER_JOB_LIMIT:
+            raise HTTPException(status_code=402, detail="Free tier limited to 3 active jobs.")
+    await _enforce_ai_quota(user)
+
+    # 1) Whisper STT via direct OpenAI-compatible HTTP using Emergent key
+    audio_bytes = base64.b64decode(payload.audio_base64)
+    files = {"file": ("audio.m4a", audio_bytes, payload.mime_type)}
+    headers = {"Authorization": f"Bearer {EMERGENT_LLM_KEY}"}
+    transcript = ""
+    try:
+        async with httpx.AsyncClient(timeout=60) as h:
+            r = await h.post(
+                "https://integrations.emergentagent.com/llm/openai/v1/audio/transcriptions",
+                headers=headers,
+                files=files,
+                data={"model": "whisper-1"},
+            )
+        if r.status_code == 200:
+            transcript = (r.json().get("text") or "").strip()
+    except Exception as e:
+        logger.warning("Whisper proxy failed, attempting OpenAI direct: %s", e)
+    if not transcript:
+        # Fallback: try OpenAI API directly (some envs route through emergentintegrations key)
+        try:
+            async with httpx.AsyncClient(timeout=60) as h:
+                r = await h.post(
+                    "https://api.openai.com/v1/audio/transcriptions",
+                    headers=headers,
+                    files=files,
+                    data={"model": "whisper-1"},
+                )
+            if r.status_code == 200:
+                transcript = (r.json().get("text") or "").strip()
+        except Exception as e:
+            logger.exception("Whisper failed: %s", e)
+
+    if not transcript:
+        raise HTTPException(status_code=502, detail="Speech-to-text failed")
+
+    # 2) Gemini structured extraction
+    intake_system = (
+        "You are Andy, a contractor intake assistant. The user dictates a job walkthrough. "
+        "Return STRICT JSON: { title (short), description, tasks (string list), "
+        "suggested_materials (list of {name, quantity}), safety_notes }."
+    )
+    raw = await _gemini_text(transcript, intake_system)
+    parsed = _extract_json(raw)
+    title = parsed.get("title") or transcript[:60]
+    description = parsed.get("description") or transcript
+    tasks = parsed.get("tasks") or []
+    materials = parsed.get("suggested_materials") or []
+    safety_notes = parsed.get("safety_notes") or ""
+
+    bom = []
+    for m in materials:
+        if isinstance(m, dict):
+            bom.append(BOMItem(
+                name=m.get("name", "Item"),
+                quantity=str(m.get("quantity", "1")),
+                stock=random.choice(["In Stock", "Low Stock"]),
+                unit_price=round(random.uniform(3, 50), 2),
+            ).model_dump())
+        elif isinstance(m, str):
+            bom.append(BOMItem(name=m, unit_price=round(random.uniform(3, 50), 2)).model_dump())
+
+    job = Job(
+        user_id=user["user_id"],
+        title=title,
+        description=description,
+        status="open",
+        safety_notes=safety_notes,
+        tools_suggested=tasks,
+        bom=[BOMItem(**b) if isinstance(b, dict) else b for b in bom],
+    )
+    doc = job.model_dump()
+    await db.jobs.insert_one(doc)
+    await _increment_ai_quota(user["user_id"])
+    return {
+        "job": doc,
+        "transcript": transcript,
+        "tasks": tasks,
+    }
+
+
+# ============================================================
+# Change orders
+# ============================================================
+@api.post("/jobs/{job_id}/change-orders")
+async def add_change_order(job_id: str, payload: ChangeOrderCreate, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    co = ChangeOrder(**payload.model_dump())
+
+    # If a photo is supplied, run a tiny Gemini call to estimate labor/cost adjustment
+    if payload.photo_base64 and payload.extra_cost == 0:
+        try:
+            raw = await _gemini_vision(
+                "This is an unexpected scope-creep issue mid-job. Return STRICT JSON: "
+                "{ extra_cost_usd: float, labor_hours: float, description: string }",
+                payload.photo_base64,
+                "You are Andy, a contractor estimator. Be conservative and field-accurate.",
+            )
+            data = _extract_json(raw)
+            co.extra_cost = float(data.get("extra_cost_usd") or 0)
+            co.labor_hours = float(data.get("labor_hours") or 0)
+            if data.get("description") and not co.description:
+                co.description = data["description"]
+        except Exception as e:
+            logger.warning("Change-order auto-estimate failed: %s", e)
+
+    res = await db.jobs.update_one(
+        {"job_id": job_id, "user_id": user["user_id"]},
+        {"$push": {"change_orders": co.model_dump()}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"change_order": co.model_dump()}
+
+
+@api.post("/jobs/{job_id}/change-orders/{co_id}/sign")
+async def sign_change_order(job_id: str, co_id: str, payload: ChangeOrderSign, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    res = await db.jobs.update_one(
+        {"job_id": job_id, "user_id": user["user_id"], "change_orders.id": co_id},
+        {
+            "$set": {
+                "change_orders.$.signature_svg": payload.signature_svg,
+                "change_orders.$.approved": True,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Change order not found")
+    return {"approved": True}
+
+
+# ============================================================
+# Local Inventory (mock)
+# ============================================================
+@api.get("/jobs/{job_id}/inventory")
+async def local_inventory(
+    job_id: str,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    authorization: Optional[str] = Header(None),
+):
+    user = await get_current_user(authorization)
+    job = await db.jobs.find_one({"job_id": job_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    rng = random.Random(f"{job_id}-{int(lat or 0)}-{int(lng or 0)}")
+    stores = []
+    for i, name in enumerate(MOCK_SUPPLIERS[:3]):
+        store = {
+            "store_id": f"store_{i}",
+            "name": name,
+            "distance_miles": round(rng.uniform(0.8, 12.5), 1),
+            "items": [],
+        }
+        for item in job.get("bom", []):
+            qty = rng.choice([
+                ("12 in stock", "In Stock"),
+                ("5 in stock", "In Stock"),
+                ("2 left", "Low Stock"),
+                ("Out of Stock", "Out of Stock"),
+            ])
+            aisle = f"Aisle {rng.randint(1, 32):02d}, Bay {rng.randint(1, 12):02d}"
+            store["items"].append(
+                {
+                    "name": item.get("name", "Item"),
+                    "availability_label": qty[0],
+                    "stock_state": qty[1],
+                    "aisle": aisle if qty[1] != "Out of Stock" else None,
+                }
+            )
+        stores.append(store)
+    stores.sort(key=lambda s: s["distance_miles"])
+    return {"stores": stores}
+
+
+# ============================================================
+# Accounting (mock QB + Square)
+# ============================================================
+@api.post("/accounting/connect")
+async def accounting_connect(payload: AccountingConnect, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    if payload.provider not in ("quickbooks", "square"):
+        raise HTTPException(status_code=400, detail="Unknown provider")
+    # mock latency
+    await asyncio.sleep(1.2)
+    accounting = user.get("accounting") or {}
+    accounting[payload.provider] = {
+        "enabled": payload.enabled,
+        "connected_at": datetime.now(timezone.utc) if payload.enabled else None,
+    }
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"accounting": accounting}})
+    return {"accounting": accounting}
+
+
+@api.post("/jobs/{job_id}/accounting/push")
+async def accounting_push(job_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    job = await db.jobs.find_one({"job_id": job_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.get("status") != "closed":
+        raise HTTPException(status_code=400, detail="Only closed jobs can be pushed to accounting")
+
+    is_pro = _is_pro_or_trialing(user)
+    markup = (job.get("markup_percent") or user.get("global_markup_percent") or 20) / 100.0 if is_pro else 0.0
+    line_items = []
+    subtotal = 0.0
+    for item in job.get("bom", []):
+        unit = float(item.get("unit_price") or 0)
+        qty_str = str(item.get("quantity") or "1")
+        qty = float(re.sub(r"[^0-9.]", "", qty_str) or "1")
+        final = unit * (1 + markup)
+        amount = round(final * qty, 2)
+        subtotal += amount
+        line_items.append({
+            "name": item.get("name"),
+            "quantity": qty,
+            "unit_amount": round(final, 2),
+            "amount": amount,
+        })
+    change_total = sum(float(co.get("extra_cost") or 0) for co in job.get("change_orders", []))
+    subtotal += change_total
+
+    payload_qb = {
+        "Line": [
+            {
+                "DetailType": "SalesItemLineDetail",
+                "Amount": li["amount"],
+                "Description": li["name"],
+                "SalesItemLineDetail": {"Qty": li["quantity"], "UnitPrice": li["unit_amount"]},
+            }
+            for li in line_items
+        ],
+        "CustomerRef": {"value": job.get("customer_business_name") or job.get("location") or "Customer"},
+        "TotalAmt": round(subtotal, 2),
+        "TxnDate": datetime.now(timezone.utc).date().isoformat(),
+    }
+    payload_square = {
+        "order": {
+            "location_id": "MOCK_LOCATION",
+            "line_items": [
+                {"name": li["name"], "quantity": str(int(li["quantity"])), "base_price_money": {"amount": int(li["unit_amount"] * 100), "currency": "USD"}}
+                for li in line_items
+            ],
+        },
+        "tip_money": {"amount": 0, "currency": "USD"},
+        "total_money": {"amount": int(subtotal * 100), "currency": "USD"},
+    }
+    # mock async delay
+    await asyncio.sleep(0.8)
+    return {
+        "pushed": True,
+        "quickbooks": user.get("accounting", {}).get("quickbooks", {}).get("enabled", False),
+        "square": user.get("accounting", {}).get("square", {}).get("enabled", False),
+        "subtotal": round(subtotal, 2),
+        "quickbooks_payload": payload_qb,
+        "square_payload": payload_square,
+    }
+
+
+# ============================================================
+# Markup engine
+# ============================================================
+@api.post("/users/markup")
+async def update_global_markup(payload: MarkupUpdate, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    if not _is_pro_or_trialing(user):
+        raise HTTPException(status_code=402, detail="Custom markups are a Pro feature.")
+    pct = max(0, min(200, int(payload.global_markup_percent)))
+    await db.users.update_one(
+        {"user_id": user["user_id"]}, {"$set": {"global_markup_percent": pct}}
+    )
+    return {"global_markup_percent": pct}
+
+
+# ============================================================
+# Public Estimate (no auth)
+# ============================================================
+@api.get("/public/estimate/{job_id}")
+async def public_estimate(job_id: str):
+    job = await db.jobs.find_one({"job_id": job_id}, {"_id": 0, "photos.base64": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+    # Re-fetch photos but redact annotations (we don't store annotations separately)
+    full = await db.jobs.find_one({"job_id": job_id}, {"_id": 0})
+    photos = []
+    for p in full.get("photos", []):
+        photos.append({"id": p["id"], "label": p["label"], "base64": p["base64"]})
+    owner = await db.users.find_one({"user_id": job["user_id"]}, {"_id": 0})
+    is_pro = _is_pro_or_trialing(owner) if owner else False
+    markup = (job.get("markup_percent") or (owner.get("global_markup_percent") if owner else 20)) / 100.0
+    items = []
+    total = 0.0
+    for it in job.get("bom", []):
+        unit = float(it.get("unit_price") or 0)
+        qty = re.sub(r"[^0-9.]", "", str(it.get("quantity") or "1")) or "1"
+        client_unit = round(unit * (1 + markup), 2)
+        line = round(client_unit * float(qty), 2)
+        total += line
+        items.append({
+            "name": it.get("name"),
+            "quantity": qty,
+            "cost_price": unit,
+            "client_price": client_unit,
+            "line_total": line,
+            "stock": it.get("stock"),
+        })
+    return {
+        "job": {
+            "job_id": job["job_id"],
+            "title": job["title"],
+            "description": job.get("description"),
+            "location": job.get("location"),
+            "status": job.get("status"),
+            "photos": photos,
+            "change_orders": job.get("change_orders", []),
+            "customer_approved_at": job.get("customer_approved_at"),
+        },
+        "items": items,
+        "subtotal": round(total, 2),
+        "markup_percent": int((job.get("markup_percent") or (owner.get("global_markup_percent") if owner else 20))),
+        "header_name": job.get("customer_business_name") if is_pro else None,
+        "watermark": None if is_pro else WATERMARK_TEXT,
+        "is_pro": is_pro,
+    }
+
+
+@api.post("/public/estimate/{job_id}/approve")
+async def public_approve(job_id: str, payload: PublicApprove):
+    res = await db.jobs.update_one(
+        {"job_id": job_id},
+        {
+            "$set": {
+                "customer_signature_svg": payload.signature_svg,
+                "customer_approved_at": datetime.now(timezone.utc),
+                "status": "in_progress",
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Estimate not found")
+    return {"approved": True}
 
 
 # ============================================================
 # Mount
 # ============================================================
-
 @api.get("/")
 async def root():
-    return {"name": "J.P. The Handyman API", "version": "1.0.0"}
+    return {"name": "Andy Handy: Job Site Assistant API", "version": "2.0.0"}
 
 
 app.include_router(api)
@@ -656,7 +1362,7 @@ async def _on_start():
         db.jobs.create_index("user_id"),
         db.jobs.create_index("job_id", unique=True),
     )
-    logger.info("J.P. backend ready (db=%s)", DB_NAME)
+    logger.info("Andy Handy backend ready (db=%s)", DB_NAME)
 
 
 @app.on_event("shutdown")

@@ -2,21 +2,23 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
-import { Volume2, Play, Mic2, Gauge, LogOut } from 'lucide-react-native';
+import { Volume2, Play, Mic2, Gauge, LogOut, Trash2, Briefcase, CreditCard } from 'lucide-react-native';
 import { createAudioPlayer } from 'expo-audio';
+import * as WebBrowser from 'expo-web-browser';
 
 import Button from '@/src/components/Button';
 import { api } from '@/src/lib/api';
 import { useAuth } from '@/src/lib/auth';
+import { useSubscription } from '@/src/lib/subscription';
 import { colors, radius, space, text } from '@/src/lib/theme';
 import { storage } from '@/src/utils/storage';
 import { useRouter } from 'expo-router';
 
 const PERSONAS = [
-  { key: 'standard', name: 'STANDARD', desc: 'Calm pro tone' },
-  { key: 'folksy', name: 'FOLKSY', desc: 'Friendly small-town' },
-  { key: 'southern', name: 'SOUTHERN', desc: 'Easy drawl' },
-  { key: 'sassy', name: 'SASSY', desc: 'Confident & playful' },
+  { key: 'standard', name: 'STANDARD ANDY', desc: 'Calm pro tone' },
+  { key: 'folksy', name: 'FOLKSY ANDY', desc: 'Friendly small-town' },
+  { key: 'southern', name: 'SOUTHERN ANDY', desc: 'Easy drawl' },
+  { key: 'sassy', name: 'SASSY ANDY', desc: 'Confident & playful' },
 ];
 
 export default function SettingsScreen() {
@@ -88,8 +90,79 @@ export default function SettingsScreen() {
 
         <View style={styles.section}>
           <View style={styles.sectionHead}>
+            <CreditCard size={16} color={colors.primary} />
+            <Text style={styles.sectionTitle}>SUBSCRIPTION</Text>
+          </View>
+          <View style={styles.personaCard}>
+            <Text style={styles.personaName}>
+              {sub?.is_pro ? (sub?.status === 'trialing' ? 'TRIALING · PRO ACCESS' : 'ACTIVE · PRO') : 'FREE TIER'}
+            </Text>
+            <Text style={styles.personaDesc}>
+              {sub?.is_pro
+                ? `Unlimited AI scans · jobs · markups`
+                : `${sub?.ai_scan_count_this_month || 0}/${sub?.ai_limit_free || 2} AI scans · max ${sub?.job_limit_free || 3} jobs`}
+            </Text>
+          </View>
+          {!sub?.is_pro && (
+            <Button label="UPGRADE TO PRO — $39/MO" onPress={() => showPaywall('Unlock everything Andy can do.')} fullWidth />
+          )}
+          {sub?.is_pro && sub?.status !== 'canceled' && (
+            <Button
+              testID="cancel-sub-btn"
+              label={subBusy ? 'CANCELING…' : 'CANCEL SUBSCRIPTION'}
+              variant="outline"
+              loading={subBusy}
+              onPress={async () => {
+                setSubBusy(true);
+                try { await api.subCancel(); await refreshSub(); }
+                catch (e: any) { Alert.alert('Cancel failed', e?.message || ''); }
+                finally { setSubBusy(false); }
+              }}
+              fullWidth
+            />
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <View style={styles.sectionHead}>
+            <Briefcase size={16} color={colors.primary} />
+            <Text style={styles.sectionTitle}>FINANCIAL INTEGRATIONS</Text>
+          </View>
+          {[
+            { key: 'quickbooks', name: 'QUICKBOOKS ONLINE', enabled: qbEnabled, busy: qbBusy, setBusy: setQbBusy },
+            { key: 'square', name: 'SQUARE', enabled: sqEnabled, busy: sqBusy, setBusy: setSqBusy },
+          ].map((p) => (
+            <View key={p.key} style={[styles.personaCard, p.enabled && { borderColor: colors.success }]}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.personaName}>{p.name}</Text>
+                  <Text style={styles.personaDesc}>{p.enabled ? 'Connected · syncing closed jobs' : 'Not connected'}</Text>
+                </View>
+                <Button
+                  testID={`acct-${p.key}-btn`}
+                  label={p.busy ? '…' : (p.enabled ? 'DISCONNECT' : 'CONNECT')}
+                  variant={p.enabled ? 'outline' : 'primary'}
+                  loading={p.busy}
+                  onPress={async () => {
+                    p.setBusy(true);
+                    try {
+                      await api.accountingConnect(p.key as any, !p.enabled);
+                      await refreshAuth();
+                    } catch (e: any) {
+                      Alert.alert('Failed', e?.message || '');
+                    } finally { p.setBusy(false); }
+                  }}
+                />
+              </View>
+            </View>
+          ))}
+        </View>
+
+
+        <View style={styles.section}>
+          <View style={styles.sectionHead}>
             <Mic2 size={16} color={colors.primary} />
-            <Text style={styles.sectionTitle}>VOICE PERSONA</Text>
+            <Text style={styles.sectionTitle}>VOICE PERSONA (ANDY)</Text>
           </View>
           <View style={styles.personaGrid}>
             {PERSONAS.map((p) => {
@@ -174,9 +247,31 @@ export default function SettingsScreen() {
             onPress={onLogout}
             fullWidth
           />
+          <View style={{ height: space.sm }} />
+          <Button
+            testID="settings-delete-account-btn"
+            label="DELETE ACCOUNT"
+            variant="outline"
+            icon={<Trash2 size={16} color={colors.danger} />}
+            onPress={() => {
+              Alert.alert(
+                'Delete account?',
+                'This permanently erases your jobs, photos, and account. This cannot be undone.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'Delete', style: 'destructive', onPress: async () => {
+                      try { await api.deleteAccount(); } catch {}
+                      await signOut();
+                      router.replace('/login');
+                    } },
+                ],
+              );
+            }}
+            fullWidth
+          />
         </View>
 
-        <Text style={styles.footer}>J.P. THE HANDYMAN · v1.0 · BUILD 26.02</Text>
+        <Text style={styles.footer}>ANDY HANDY · v2.0 · BUILD 26.02</Text>
       </ScrollView>
     </SafeAreaView>
   );

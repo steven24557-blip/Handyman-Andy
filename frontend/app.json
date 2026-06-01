@@ -1,19 +1,22 @@
 {
   "expo": {
-    "name": "J.P. The Handyman",
-    "slug": "jp-handyman",
+    "name": "Andy Handy",
+    "slug": "andy-handy",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "jphandyman",
+    "scheme": "andyhandy",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "usesAppleSignIn": true,
+      "bundleIdentifier": "com.andyhandy.app",
       "infoPlist": {
         "NSCameraUsageDescription": "Capture photos of repair tasks for AI diagnostics.",
         "NSPhotoLibraryUsageDescription": "Attach job-site photos to your work orders.",
-        "NSMicrophoneUsageDescription": "Capture audio notes during diagnostics."
+        "NSMicrophoneUsageDescription": "Voice intake for hands-free job creation.",
+        "NSLocationWhenInUseUsageDescription": "Find nearby hardware suppliers for your job."
       }
     },
     "android": {
@@ -24,44 +27,30 @@
       "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
         "android.permission.READ_MEDIA_IMAGES",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.FLASHLIGHT"
+        "android.permission.FLASHLIGHT",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION"
       ]
     },
-    "web": {
-      "bundler": "metro",
-      "output": "static",
-      "favicon": "./assets/images/favicon.png"
-    },
+    "web": { "bundler": "metro", "output": "static", "favicon": "./assets/images/favicon.png" },
     "plugins": [
       "expo-router",
-      [
-        "expo-splash-screen",
-        {
-          "image": "./assets/images/splash-icon.png",
-          "imageWidth": 200,
-          "resizeMode": "contain",
-          "backgroundColor": "#09090b"
-        }
-      ],
+      ["expo-splash-screen", {
+        "image": "./assets/images/splash-icon.png",
+        "imageWidth": 200, "resizeMode": "contain", "backgroundColor": "#09090b"
+      }],
       "expo-font",
-      [
-        "expo-camera",
-        {
-          "cameraPermission": "Capture photos of repair tasks for AI diagnostics.",
-          "microphonePermission": "Capture audio notes during diagnostics."
-        }
-      ],
-      [
-        "expo-image-picker",
-        {
-          "photosPermission": "Attach job-site photos to your work orders."
-        }
-      ]
+      ["expo-camera", {
+        "cameraPermission": "Capture photos of repair tasks for AI diagnostics.",
+        "microphonePermission": "Voice intake for hands-free job creation."
+      }],
+      ["expo-image-picker", { "photosPermission": "Attach job-site photos to your work orders." }],
+      ["expo-location", { "locationAlwaysAndWhenInUsePermission": "Find nearby hardware suppliers for your job." }],
+      "expo-apple-authentication"
     ],
-    "experiments": {
-      "typedRoutes": true
-    }
+    "experiments": { "typedRoutes": true }
   }
 }
