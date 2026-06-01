@@ -4,7 +4,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
 import { Volume2, Play, Mic2, Gauge, LogOut, Trash2, Briefcase, CreditCard } from 'lucide-react-native';
 import { createAudioPlayer } from 'expo-audio';
-import * as WebBrowser from 'expo-web-browser';
 
 import Button from '@/src/components/Button';
 import { api } from '@/src/lib/api';

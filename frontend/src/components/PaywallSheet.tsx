@@ -23,7 +23,14 @@ export default function PaywallSheet() {
     try {
       const origin = process.env.EXPO_PUBLIC_BACKEND_URL || '';
       const res = await api.subCheckout(origin);
-      const result = await WebBrowser.openAuthSessionAsync(res.checkout_url, `${origin}/billing/success`);
+      // Stripe Checkout: route through the system browser (ASWebAuthenticationSession /
+      // Chrome Custom Tabs). No WebView — complies with Google + Apple in-app browser
+      // policies and Stripe's PCI requirements.
+      const result = await WebBrowser.openAuthSessionAsync(
+        res.checkout_url,
+        `${origin}/billing/success`,
+        { preferEphemeralSession: true, showInRecents: false },
+      );
       if (result.type === 'success' && result.url) {
         const m = result.url.match(/session_id=([^&]+)/);
         if (m) {

@@ -113,7 +113,13 @@ export default function LoginScreen() {
     try {
       const redirectUrl = Linking.createURL('auth');
       const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
-      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl);
+      // Google OAuth policy (RFC 8252): MUST use the system browser, not a WebView.
+      // `openAuthSessionAsync` uses ASWebAuthenticationSession on iOS and Chrome
+      // Custom Tabs on Android — both Google-approved secure user-agents.
+      const result = await WebBrowser.openAuthSessionAsync(authUrl, redirectUrl, {
+        preferEphemeralSession: true, // iOS: no shared cookies, private session
+        showInRecents: false,         // Android: don't surface auth URL in recents
+      });
       if (result.type === 'success' && result.url) {
         await handleRedirect(result.url);
       }
