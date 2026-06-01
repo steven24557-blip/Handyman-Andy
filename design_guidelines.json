@@ -1,0 +1,225 @@
+{
+  "theme": "Industrial Utility",
+  "archetype": "The Performance Pro / Industrial Variant",
+  "mode": "dark",
+  "design_philosophy": "Rugged, dependable, high-contrast, designed like a premium DeWalt or Milwaukee tool interface. Every element must feel like a physical, heavy-duty toggle or display.",
+  "colors": {
+    "background": "#09090b",
+    "surface": "#18181b",
+    "surface_elevated": "#27272a",
+    "primary": "#EAB308",
+    "primary_muted": "rgba(234, 179, 8, 0.2)",
+    "text_primary": "#ffffff",
+    "text_secondary": "#a1a1aa",
+    "text_tertiary": "#71717a",
+    "border": "#3f3f46",
+    "border_focus": "#EAB308",
+    "status": {
+      "open": "#3b82f6",
+      "in_progress": "#EAB308",
+      "emergent": "#ef4444",
+      "closed": "#22c55e",
+      "emergent_bg": "rgba(239, 68, 68, 0.15)"
+    },
+    "scrim": "rgba(0, 0, 0, 0.7)"
+  },
+  "typography": {
+    "font_families": {
+      "headers": "System (Heavy/Condensed) - Suggest linking to a bold geometric sans like Barlow Condensed or Impact if custom fonts are used, otherwise use System font with heavy weight.",
+      "body": "System (Inter/Roboto)"
+    },
+    "styles": {
+      "h1": {
+        "fontSize": 32,
+        "fontWeight": "900",
+        "letterSpacing": 1.5,
+        "textTransform": "uppercase"
+      },
+      "h2": {
+        "fontSize": 24,
+        "fontWeight": "800",
+        "letterSpacing": 1.2,
+        "textTransform": "uppercase"
+      },
+      "h3": {
+        "fontSize": 20,
+        "fontWeight": "700",
+        "letterSpacing": 1.0,
+        "textTransform": "uppercase"
+      },
+      "body_large": {
+        "fontSize": 18,
+        "fontWeight": "500",
+        "lineHeight": 26
+      },
+      "body": {
+        "fontSize": 16,
+        "fontWeight": "400",
+        "lineHeight": 24
+      },
+      "caption": {
+        "fontSize": 13,
+        "fontWeight": "600",
+        "letterSpacing": 0.5,
+        "textTransform": "uppercase"
+      }
+    }
+  },
+  "layout_spacing": {
+    "padding": {
+      "xs": 4,
+      "sm": 8,
+      "md": 16,
+      "lg": 24,
+      "xl": 32
+    },
+    "borderRadius": {
+      "none": 0,
+      "sm": 4,
+      "md": 8,
+      "lg": 12,
+      "pill": 9999
+    },
+    "borderWidth": {
+      "default": 1,
+      "thick": 2
+    },
+    "touch_targets": {
+      "min_height": 48,
+      "min_width": 48
+    }
+  },
+  "components": {
+    "Button": {
+      "primary": {
+        "backgroundColor": "#EAB308",
+        "borderRadius": 4,
+        "paddingVertical": 16,
+        "paddingHorizontal": 24,
+        "borderWidth": 2,
+        "borderColor": "#ca8a04",
+        "textStyle": {
+          "color": "#09090b",
+          "fontWeight": "900",
+          "textTransform": "uppercase",
+          "letterSpacing": 1
+        }
+      },
+      "outline": {
+        "backgroundColor": "transparent",
+        "borderWidth": 2,
+        "borderColor": "#3f3f46",
+        "borderRadius": 4,
+        "textStyle": {
+          "color": "#ffffff",
+          "fontWeight": "700"
+        }
+      },
+      "disabled": {
+        "backgroundColor": "#27272a",
+        "borderColor": "#3f3f46",
+        "textStyle": {
+          "color": "#71717a"
+        }
+      }
+    },
+    "Card": {
+      "base": {
+        "backgroundColor": "#18181b",
+        "borderRadius": 8,
+        "borderWidth": 1,
+        "borderColor": "#27272a",
+        "padding": 16
+      },
+      "active": {
+        "borderColor": "#EAB308",
+        "borderWidth": 2
+      },
+      "status_indicators": {
+        "open": {
+          "borderLeftWidth": 4,
+          "borderStyle": "dashed",
+          "borderLeftColor": "#3b82f6"
+        },
+        "in_progress": {
+          "borderLeftWidth": 4,
+          "borderStyle": "solid",
+          "borderLeftColor": "#EAB308"
+        },
+        "emergent": {
+          "borderLeftWidth": 4,
+          "borderStyle": "solid",
+          "borderLeftColor": "#ef4444"
+        },
+        "closed": {
+          "borderLeftWidth": 4,
+          "borderStyle": "solid",
+          "borderLeftColor": "#22c55e"
+        }
+      }
+    },
+    "Input": {
+      "base": {
+        "backgroundColor": "#09090b",
+        "borderWidth": 2,
+        "borderColor": "#27272a",
+        "borderRadius": 4,
+        "padding": 16,
+        "color": "#ffffff"
+      },
+      "focus": {
+        "borderColor": "#EAB308"
+      }
+    },
+    "Checkbox": {
+      "container": {
+        "width": 24,
+        "height": 24,
+        "borderWidth": 2,
+        "borderColor": "#71717a",
+        "borderRadius": 4,
+        "justifyContent": "center",
+        "alignItems": "center"
+      },
+      "checked": {
+        "backgroundColor": "#EAB308",
+        "borderColor": "#EAB308"
+      }
+    }
+  },
+  "motion_moti": {
+    "list_stagger": {
+      "from": { "opacity": 0, "translateY": 20 },
+      "animate": { "opacity": 1, "translateY": 0 },
+      "transition": { "type": "timing", "duration": 400, "delay": 50 }
+    },
+    "pulsing_warning": {
+      "from": { "opacity": 0.5, "scale": 0.98 },
+      "animate": { "opacity": 1, "scale": 1 },
+      "transition": { "type": "timing", "duration": 800, "loop": true }
+    },
+    "press_scale": {
+      "from": { "scale": 1 },
+      "animate": { "scale": 0.95 },
+      "transition": { "type": "spring", "damping": 15, "stiffness": 300 }
+    }
+  },
+  "media": {
+    "login_bg": {
+      "url": "https://static.prod-images.emergentagent.com/jobs/c28cb54f-2475-4c50-a8e5-acdc31b7287d/images/1b5948e805f881ffe3cf7ca33aa20dbe86af58fe7e4ac582e86cb0f98e3c75ee.png",
+      "description": "Dark, rugged industrial metallic surface with ambient amber lighting",
+      "category": "background",
+      "usage": "Login screen background behind the professional disclaimer, with a heavy black/zinc overlay to ensure text readability."
+    }
+  },
+  "instructions_to_main_agent": [
+    "TECH STACK: MUST use React Native + Expo. All styling must use React Native `StyleSheet` objects mapped to the provided tokens. Do not use Tailwind/CSS in this specific project context.",
+    "NAVIGATION: Use Expo Router v3 file-based routing. Wrap the app in a dark-themed layout.",
+    "LOGIN SCREEN: Ensure the Disclaimer ScrollView evaluates the 'onScroll' event to determine if the user has reached the bottom before enabling the 'Agree' Checkbox.",
+    "DASHBOARD: Map the Job statuses strictly to the visual borders defined in components.Card.status_indicators. Use Moti for entrance staggers on the vertical card deck.",
+    "JOB DETAILS: Integrate React Native Skia for the annotation canvas. The 'AI analyze' button should be the primary Yellow CTA.",
+    "CAMERA: Use Expo Camera in full-screen mode for the diagnostic tool. Place a prominent torch toggle (Lucide icon) in the top right corner.",
+    "TESTING: Apply `testID` (mapped from data-testid) to all interactive elements for React Native testing standards (e.g., testID='login-agree-checkbox').",
+    "THEME: Never use pure white backgrounds. The app must stay locked in deep dark mode to simulate hardware interfaces."
+  ]
+}
