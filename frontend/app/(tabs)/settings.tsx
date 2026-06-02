@@ -21,12 +21,18 @@ const PERSONAS = [
 ];
 
 export default function SettingsScreen() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, refresh: refreshAuth } = useAuth();
+  const { sub, refresh: refreshSub, showPaywall } = useSubscription();
   const router = useRouter();
   const [persona, setPersona] = useState<string>('standard');
   const [pitch, setPitch] = useState<number>(1.0); // client-side cue (not sent)
   const [pace, setPace] = useState<number>(1.0);
   const [previewing, setPreviewing] = useState(false);
+  const [subBusy, setSubBusy] = useState(false);
+  const [qbBusy, setQbBusy] = useState(false);
+  const [sqBusy, setSqBusy] = useState(false);
+  const qbEnabled = user?.accounting?.quickbooks?.enabled || false;
+  const sqEnabled = user?.accounting?.square?.enabled || false;
 
   useEffect(() => {
     (async () => {
