@@ -47,7 +47,7 @@ export default function PublicEstimate() {
 
   const approved = !!est.job.customer_approved_at;
   const wm = est.watermark;
-  const header = est.header_name || 'Andy Handy';
+  const header = est.header_name || 'Handy Andy';
   const photos = (est.job.photos || []).filter((p: any) => p.label !== 'annotation');
 
   return (

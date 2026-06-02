@@ -1,4 +1,4 @@
-"""Andy Handy: Job Site Assistant — FastAPI backend."""
+"""Handy Andy: Job Site Assistant — FastAPI backend."""
 
 import asyncio
 import base64
@@ -44,9 +44,9 @@ client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("andy_handy")
+logger = logging.getLogger("handy_andy")
 
-app = FastAPI(title="Andy Handy: Job Site Assistant API")
+app = FastAPI(title="Handy Andy: Job Site Assistant API")
 api = APIRouter(prefix="/api")
 
 
@@ -63,7 +63,7 @@ PERSONA_VOICES = {
     "southern": ("echo", "Speak in a relaxed Southern drawl. Friendly and slow."),
     "sassy": ("nova", "Speak with sassy confidence and a touch of humor."),
 }
-WATERMARK_TEXT = "Powered by Andy Handy: Job Site Assistant"
+WATERMARK_TEXT = "Powered by Handy Andy: Job Site Assistant"
 
 # Mock hardware suppliers
 MOCK_SUPPLIERS = ["Home Depot", "Lowe's", "Ace Hardware", "Menards"]
@@ -567,7 +567,7 @@ async def subscription_checkout(payload: CheckoutBody, authorization: Optional[s
                         "currency": "usd",
                         "recurring": {"interval": "month"},
                         "unit_amount": int(PRO_PRICE_USD * 100),
-                        "product_data": {"name": "Andy Handy Pro"},
+                        "product_data": {"name": "Handy Andy Pro"},
                     },
                 }
             ],
@@ -958,7 +958,7 @@ async def voice_greet(payload: VoiceGreetRequest, authorization: Optional[str] =
         ),
     ).with_model("gemini", "gemini-2.5-flash")
     try:
-        text = await chat.send_message(UserMessage(text=f"Greet {name}. Welcome them to Andy Handy and offer help."))
+        text = await chat.send_message(UserMessage(text=f"Greet {name}. Welcome them to Handy Andy and offer help."))
     except Exception:
         text = f"Hey {name}, Andy here. Tools loaded — let's get to work."
     text = (text or "").strip().strip('"').strip()[:400]
@@ -1338,7 +1338,7 @@ async def public_approve(job_id: str, payload: PublicApprove):
 # ============================================================
 @api.get("/")
 async def root():
-    return {"name": "Andy Handy: Job Site Assistant API", "version": "2.0.0"}
+    return {"name": "Handy Andy: Job Site Assistant API", "version": "2.0.0"}
 
 
 app.include_router(api)
@@ -1362,7 +1362,7 @@ async def _on_start():
         db.jobs.create_index("user_id"),
         db.jobs.create_index("job_id", unique=True),
     )
-    logger.info("Andy Handy backend ready (db=%s)", DB_NAME)
+    logger.info("Handy Andy backend ready (db=%s)", DB_NAME)
 
 
 @app.on_event("shutdown")
