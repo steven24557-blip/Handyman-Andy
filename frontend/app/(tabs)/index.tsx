@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { Plus, LogOut } from 'lucide-react-native';
+import { Plus, LogOut, Mic } from 'lucide-react-native';
 import FadeInView from '@/src/components/FadeInView';
 import { createAudioPlayer } from 'expo-audio';
 import { useSubscription } from '@/src/lib/subscription';
