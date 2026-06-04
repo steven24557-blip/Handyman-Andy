@@ -30,7 +30,7 @@ from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
 # Environment
 # ============================================================
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env")
+load_dotenv(ROOT_DIR / ".env", override=True)
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
