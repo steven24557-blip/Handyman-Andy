@@ -275,17 +275,24 @@ export default function SettingsScreen() {
             variant="outline"
             icon={<Trash2 size={16} color={colors.danger} />}
             onPress={() => {
+              // Anti-dark-pattern: single confirm step, symmetric buttons,
+              // no email-support detour, no multi-step verification chain.
               Alert.alert(
                 'Delete account?',
-                'This permanently erases your jobs, photos, and account. This cannot be undone.',
+                'This permanently and immediately erases your account, all jobs, photos, voice transcripts, and audit history. This cannot be undone.',
                 [
                   { text: 'Cancel', style: 'cancel' },
-                  { text: 'Delete', style: 'destructive', onPress: async () => {
+                  {
+                    text: 'Delete now',
+                    style: 'destructive',
+                    onPress: async () => {
                       try { await api.deleteAccount(); } catch {}
                       await signOut();
                       router.replace('/login');
-                    } },
+                    },
+                  },
                 ],
+                { cancelable: true },
               );
             }}
             fullWidth

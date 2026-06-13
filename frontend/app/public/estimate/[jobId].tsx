@@ -98,6 +98,15 @@ export default function PublicEstimate() {
       ) : (
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>SIGN TO APPROVE</Text>
+          <View style={styles.esignBox}>
+            <Text style={styles.esignText}>
+              ELECTRONIC RECORD & SIGNATURE DISCLOSURE — By signing below, you explicitly
+              consent under the federal ESIGN Act (15 U.S.C. § 7001 et seq.) and California
+              UETA (Cal. Civ. Code § 1633.1 et seq.) to conduct this transaction
+              electronically and acknowledge that this digital signature constitutes a
+              legally binding execution of this agreement.
+            </Text>
+          </View>
           <View style={styles.sigBox}>
             <GestureDetector gesture={pan}>
               <View style={{ flex: 1 }}>
@@ -151,6 +160,8 @@ const styles = StyleSheet.create({
   tQty: { color: colors.textTertiary, fontSize: 12, fontWeight: '700', width: 36, textAlign: 'right' },
   tPrice: { color: colors.textPrimary, fontWeight: '900', fontSize: 14, width: 80, textAlign: 'right' },
   sigBox: { height: 160, borderRadius: radius.md, borderWidth: 2, borderColor: colors.primary, backgroundColor: 'rgba(255,255,255,0.04)' },
+  esignBox: { borderWidth: 1.5, borderColor: colors.primary, backgroundColor: 'rgba(234,179,8,0.06)', borderRadius: radius.sm, padding: space.sm, marginBottom: space.sm },
+  esignText: { color: colors.textPrimary, fontSize: 11, lineHeight: 16, fontWeight: '600', letterSpacing: 0.2 },
   sigHint: { position: 'absolute', alignSelf: 'center', top: '40%', color: colors.textTertiary, fontStyle: 'italic' },
   approvedCard: { alignItems: 'center', padding: space.xl, marginHorizontal: space.lg, marginTop: space.lg, borderRadius: radius.md, borderWidth: 2, borderColor: colors.success, backgroundColor: 'rgba(34,197,94,0.08)', gap: space.sm },
   approvedTitle: { color: colors.textPrimary, fontWeight: '900', fontSize: 16, letterSpacing: 1.2 },
