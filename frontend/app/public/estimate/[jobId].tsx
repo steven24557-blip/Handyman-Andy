@@ -47,7 +47,7 @@ export default function PublicEstimate() {
 
   const approved = !!est.job.customer_approved_at;
   const wm = est.watermark;
-  const header = est.header_name || 'Handy Andy';
+  const header = est.header_name || 'Handy-Andy';
   const photos = (est.job.photos || []).filter((p: any) => p.label !== 'annotation');
 
   return (
@@ -100,11 +100,7 @@ export default function PublicEstimate() {
           <Text style={styles.sectionTitle}>SIGN TO APPROVE</Text>
           <View style={styles.esignBox}>
             <Text style={styles.esignText}>
-              ELECTRONIC RECORD & SIGNATURE DISCLOSURE — By signing below, you explicitly
-              consent under the federal ESIGN Act (15 U.S.C. § 7001 et seq.) and California
-              UETA (Cal. Civ. Code § 1633.1 et seq.) to conduct this transaction
-              electronically and acknowledge that this digital signature constitutes a
-              legally binding execution of this agreement.
+              Consent under US ESIGN Act & CA UETA: By signing, you agree to conduct this transaction electronically and acknowledge this signature is a legally binding execution of this contract.
             </Text>
           </View>
           <View style={styles.sigBox}>

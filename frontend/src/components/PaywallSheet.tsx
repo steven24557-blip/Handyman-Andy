@@ -59,7 +59,7 @@ export default function PaywallSheet() {
               <Lock size={14} color={colors.primary} />
               <Text style={styles.lockBadgeText}>PRO FEATURE</Text>
             </View>
-            <Text style={styles.title}>UNLOCK HANDY ANDY PRO</Text>
+            <Text style={styles.title}>UNLOCK HANDY-ANDY PRO</Text>
             {paywallReason && <Text style={styles.reason}>{paywallReason}</Text>}
 
             <View style={styles.priceCard}>

@@ -1,4 +1,4 @@
-"""Handy Andy: Job Site Assistant — FastAPI backend."""
+"""Handy-Andy: Job Site Assistant — FastAPI backend."""
 
 import asyncio
 import base64
@@ -48,7 +48,7 @@ db = client[DB_NAME]
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("handy_andy")
 
-app = FastAPI(title="Handy Andy: Job Site Assistant API")
+app = FastAPI(title="Handy-Andy: Job Site Assistant API")
 api = APIRouter(prefix="/api")
 
 
@@ -65,7 +65,7 @@ PERSONA_VOICES = {
     "southern": ("echo", "Speak in a relaxed Southern drawl. Friendly and slow."),
     "sassy": ("nova", "Speak with sassy confidence and a touch of humor."),
 }
-WATERMARK_TEXT = "Powered by Handy Andy: Job Site Assistant"
+WATERMARK_TEXT = "Powered by Handy-Andy: Job Site Assistant"
 
 # Mock hardware suppliers
 MOCK_SUPPLIERS = ["Home Depot", "Lowe's", "Ace Hardware", "Menards"]
@@ -644,7 +644,7 @@ async def subscription_checkout(payload: CheckoutBody, authorization: Optional[s
                         "currency": "usd",
                         "recurring": {"interval": "month"},
                         "unit_amount": int(PRO_PRICE_USD * 100),
-                        "product_data": {"name": "Handy Andy Pro"},
+                        "product_data": {"name": "Handy-Andy Pro"},
                     },
                 }
             ],
@@ -1037,7 +1037,7 @@ async def voice_greet(payload: VoiceGreetRequest, authorization: Optional[str] =
         ),
     ).with_model("gemini", "gemini-2.5-flash")
     try:
-        text = await chat.send_message(UserMessage(text=f"Greet {name}. Welcome them to Handy Andy and offer help."))
+        text = await chat.send_message(UserMessage(text=f"Greet {name}. Welcome them to Handy-Andy and offer help."))
     except Exception:
         text = f"Hey {name}, Andy here. Tools loaded — let's get to work."
     text = (text or "").strip().strip('"').strip()[:400]
@@ -1476,7 +1476,7 @@ async def consent_status(authorization: Optional[str] = Header(None)):
 # ============================================================
 @api.get("/")
 async def root():
-    return {"name": "Handy Andy: Job Site Assistant API", "version": "2.0.0"}
+    return {"name": "Handy-Andy: Job Site Assistant API", "version": "2.0.0"}
 
 
 app.include_router(api)
@@ -1499,8 +1499,49 @@ async def _on_start():
         db.user_sessions.create_index("expires_at", expireAfterSeconds=0),
         db.jobs.create_index("user_id"),
         db.jobs.create_index("job_id", unique=True),
+        db.audit_log.create_index("user_id"),
+        db.audit_log.create_index("timestamp"),
     )
-    logger.info("Handy Andy backend ready (db=%s)", DB_NAME)
+    asyncio.create_task(enforce_data_minimization_policy())
+    logger.info("Handy-Andy backend ready (db=%s)", DB_NAME)
+
+
+async def enforce_data_minimization_policy():
+    """Daily background data-minimization sweep (CCPA/CPRA + Illinois BIPA).
+
+    Every 24h: identify jobs marked 'closed' (the app's terminal "completed"
+    state) for more than 30 days, then PERMANENTLY DELETE any associated raw
+    audio assets (.mp3 / .wav / base64 blobs) from storage. Text transcripts
+    are retained as the minimal record of work performed. Audit-log entries
+    older than 7 years are purged. Expired sessions are swept defensively.
+    """
+    INTERVAL_S = 24 * 60 * 60
+    while True:
+        try:
+            cutoff_30 = datetime.now(timezone.utc) - timedelta(days=30)
+            cutoff_audit = datetime.now(timezone.utc) - timedelta(days=365 * 7)
+            r1 = await db.jobs.update_many(
+                {"status": "closed", "updated_at": {"$lt": cutoff_30}},
+                {"$unset": {
+                    "voice_audio_base64": "",
+                    "voice_audio_mime": "",
+                    "voice_audio_uri": "",
+                    "voice_audio_mp3": "",
+                    "voice_audio_wav": "",
+                    "raw_audio": "",
+                }},
+            )
+            r2 = await db.audit_log.delete_many({"timestamp": {"$lt": cutoff_audit}})
+            r3 = await db.user_sessions.delete_many(
+                {"expires_at": {"$lt": datetime.now(timezone.utc)}}
+            )
+            logger.info(
+                "data-minimization sweep: audio_purged_jobs=%s audit_deleted=%s sessions=%s",
+                r1.modified_count, r2.deleted_count, r3.deleted_count,
+            )
+        except Exception as e:
+            logger.exception("data-minimization sweep failed: %s", e)
+        await asyncio.sleep(INTERVAL_S)
 
 
 @app.on_event("shutdown")

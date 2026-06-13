@@ -63,7 +63,7 @@ export default function AIConsentScreen() {
         </View>
         <Text style={styles.title}>AI DATA PROCESSING & BIOMETRIC TRANSPARENCY</Text>
         <Text style={styles.lede}>
-          Handy Andy uses third-party enterprise AI providers to deliver vision diagnostics, voice transcription, and synthesis. Per CCPA/CPRA § 1798.100 and EU AI Act Art. 50, you must explicitly consent to each data flow before continuing.
+          Handy-Andy uses third-party enterprise AI providers to deliver vision diagnostics, voice transcription, and synthesis. Per CCPA/CPRA § 1798.100 and EU AI Act Art. 50, you must explicitly consent to each data flow before continuing.
         </Text>
 
         <View style={{ gap: space.md, marginTop: space.lg }}>

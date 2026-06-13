@@ -1,9 +1,9 @@
 # Privacy Policy
 
-**Handy Andy: Job Site Assistant**
+**Handy-Andy: Job Site Assistant**
 **Effective Date:** 2026-02-01 · **Last Updated:** 2026-02-01 · **Policy Version:** 1.0.0
 
-This Privacy Policy explains how Handy Andy ("we", "us", "the Application") collects, uses, discloses, and protects your personal information. It is written to satisfy the California Consumer Privacy Act of 2018, as amended by the California Privacy Rights Act of 2020 ("CCPA/CPRA"), the Illinois Biometric Information Privacy Act ("BIPA"), and the European Union Artificial Intelligence Act ("EU AI Act").
+This Privacy Policy explains how Handy-Andy ("we", "us", "the Application") collects, uses, discloses, and protects your personal information. It is written to satisfy the California Consumer Privacy Act of 2018, as amended by the California Privacy Rights Act of 2020 ("CCPA/CPRA"), the Illinois Biometric Information Privacy Act ("BIPA"), and the European Union Artificial Intelligence Act ("EU AI Act").
 
 If you are a California resident, this policy is your statutorily required **Notice at Collection** under Cal. Civ. Code § 1798.100(b).
 
@@ -105,7 +105,7 @@ We will revise this policy as our practices evolve. Material changes will requir
 
 ## 12. Contact
 
-**Handy Andy Privacy Office**
+**Handy-Andy Privacy Office**
 privacy@handyandy.app
 Postal: 1 Tool Way, San Francisco, CA 94110
 

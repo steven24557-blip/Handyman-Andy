@@ -299,7 +299,7 @@ export default function SettingsScreen() {
           />
         </View>
 
-        <Text style={styles.footer}>HANDY ANDY · v2.0 · BUILD 26.02</Text>
+        <Text style={styles.footer}>HANDY-ANDY · v2.0 · BUILD 26.02</Text>
       </ScrollView>
     </SafeAreaView>
   );
