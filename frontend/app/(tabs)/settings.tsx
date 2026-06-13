@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
-import { Volume2, Play, Mic2, Gauge, LogOut, Trash2, Briefcase, CreditCard } from 'lucide-react-native';
+import { Volume2, Play, Mic2, Gauge, LogOut, Trash2, Briefcase, CreditCard, ShieldCheck, ChevronRight } from 'lucide-react-native';
 import { createAudioPlayer } from 'expo-audio';
 
 import Button from '@/src/components/Button';
@@ -244,9 +244,25 @@ export default function SettingsScreen() {
         </View>
 
         <View style={styles.section}>
-          <Button
-            testID="settings-logout-btn"
-            label="SIGN OUT"
+          <View style={styles.sectionHead}>
+            <ShieldCheck size={16} color={colors.primary} />
+            <Text style={styles.sectionTitle}>PRIVACY & LEGAL</Text>
+          </View>
+          <Pressable testID="settings-privacy-row" onPress={() => router.push('/privacy')} style={styles.legalRow}>
+            <Text style={styles.legalLabel}>Privacy Policy</Text>
+            <ChevronRight size={16} color={colors.textTertiary} />
+          </Pressable>
+          <Pressable testID="settings-terms-row" onPress={() => router.push('/terms')} style={styles.legalRow}>
+            <Text style={styles.legalLabel}>Terms of Service</Text>
+            <ChevronRight size={16} color={colors.textTertiary} />
+          </Pressable>
+          <Pressable testID="settings-consent-row" onPress={() => router.push('/consent')} style={styles.legalRow}>
+            <Text style={styles.legalLabel}>Manage Privacy Consent</Text>
+            <ChevronRight size={16} color={colors.textTertiary} />
+          </Pressable>
+        </View>
+
+        <View style={styles.section}>
             variant="danger"
             icon={<LogOut size={16} color="#fff" />}
             onPress={onLogout}

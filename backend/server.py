@@ -1334,6 +1334,65 @@ async def public_approve(job_id: str, payload: PublicApprove):
 
 
 # ============================================================
+# Consent / Audit Log (CCPA/CPRA + Illinois BIPA)
+# ============================================================
+class ConsentRecord(BaseModel):
+    consent_version: str
+    accepted_items: List[str] = Field(default_factory=list)
+    kind: str = "ai_processing"  # ai_processing | privacy_policy | terms | biometric
+
+
+@api.post("/consent/record")
+async def record_consent(payload: ConsentRecord, request: Request, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent", "")
+    doc = {
+        "log_id": f"consent_{uuid.uuid4().hex[:12]}",
+        "user_id": user["user_id"],
+        "kind": payload.kind,
+        "consent_version": payload.consent_version,
+        "accepted_items": payload.accepted_items,
+        "ip": ip,
+        "user_agent": user_agent[:500],
+        "timestamp": datetime.now(timezone.utc),
+    }
+    await db.audit_log.insert_one(doc)
+    # Stamp the latest consent state on the user for quick gating
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {
+            "$set": {
+                f"consent.{payload.kind}.version": payload.consent_version,
+                f"consent.{payload.kind}.accepted_items": payload.accepted_items,
+                f"consent.{payload.kind}.recorded_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    doc.pop("_id", None)
+    return {"recorded": True, "log": doc}
+
+
+@api.get("/consent/list")
+async def list_consents(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    cur = db.audit_log.find({"user_id": user["user_id"]}, {"_id": 0}).sort("timestamp", -1)
+    consents = await cur.to_list(200)
+    return {"consents": consents}
+
+
+@api.get("/consent/status")
+async def consent_status(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    consent = user.get("consent", {}) or {}
+    return {
+        "ai_processing_recorded": bool(consent.get("ai_processing", {}).get("recorded_at")),
+        "ai_processing_version": consent.get("ai_processing", {}).get("version"),
+        "required_version": "1.0.0",
+    }
+
+
+# ============================================================
 # Mount
 # ============================================================
 @api.get("/")

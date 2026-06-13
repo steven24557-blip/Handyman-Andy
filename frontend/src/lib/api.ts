@@ -105,4 +105,9 @@ export const api = {
   publicEstimate: (job_id: string) => request<any>(`/public/estimate/${job_id}`),
   publicApprove: (job_id: string, signature_svg: string) =>
     request<any>(`/public/estimate/${job_id}/approve`, 'POST', { signature_svg }),
+
+  // Consent / audit log (CCPA/CPRA)
+  recordConsent: (payload: { consent_version: string; accepted_items: string[]; kind?: string }) =>
+    request<any>('/consent/record', 'POST', payload),
+  listConsents: () => request<{ consents: any[] }>('/consent/list'),
 };

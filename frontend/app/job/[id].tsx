@@ -862,4 +862,6 @@ const styles = StyleSheet.create({
   aisleText: { color: colors.primary, fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
 
   sigPad: { height: 180, borderRadius: radius.md, borderWidth: 2, borderColor: colors.primary, backgroundColor: 'rgba(255,255,255,0.04)' },
+  legalRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: space.md, borderRadius: radius.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+  legalLabel: { color: colors.textPrimary, fontWeight: '700', fontSize: 14 },
 });
