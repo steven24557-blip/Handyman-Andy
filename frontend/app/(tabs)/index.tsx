@@ -118,13 +118,39 @@ export default function Dashboard() {
           <Text style={styles.userName} numberOfLines={1}>{user?.name || 'Operator'}</Text>
         </View>
         <View style={styles.headerActions}>
-          <Pressable testID="dashboard-voice-btn" onPress={() => router.push('/job/voice-intake')} style={styles.iconBtn}>
+          <Pressable
+            testID="dashboard-voice-btn"
+            onPress={() => router.push('/job/voice-intake')}
+            style={styles.iconBtn}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Start voice walkthrough"
+            accessibilityHint="Opens the hands-free voice intake recorder"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <Mic size={18} color={colors.primary} strokeWidth={2.6} />
           </Pressable>
-          <Pressable testID="dashboard-new-job-btn" onPress={createDemo} style={styles.iconBtn}>
+          <Pressable
+            testID="dashboard-new-job-btn"
+            onPress={createDemo}
+            style={styles.iconBtn}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Create new job"
+            accessibilityHint="Adds a blank job to your dashboard"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <Plus size={18} color={colors.primary} strokeWidth={3} />
           </Pressable>
-          <Pressable testID="dashboard-logout-btn" onPress={onLogout} style={styles.iconBtn}>
+          <Pressable
+            testID="dashboard-logout-btn"
+            onPress={onLogout}
+            style={styles.iconBtn}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <LogOut size={18} color={colors.textSecondary} strokeWidth={2.4} />
           </Pressable>
         </View>

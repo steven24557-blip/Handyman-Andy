@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, space } from '../lib/theme';
 
 type Variant = 'primary' | 'outline' | 'danger' | 'ghost';
@@ -13,10 +13,17 @@ type Props = {
   icon?: React.ReactNode;
   testID?: string;
   fullWidth?: boolean;
+  /** Optional override; defaults to label for screen readers. */
+  accessibilityLabel?: string;
+  /** Spoken hint about what happens on activation. */
+  accessibilityHint?: string;
 };
+
+const MIN_TAP = Platform.OS === 'android' ? 48 : 44;
 
 export default function Button({
   label, onPress, variant = 'primary', disabled, loading, icon, testID, fullWidth,
+  accessibilityLabel, accessibilityHint,
 }: Props) {
   const isDisabled = disabled || loading;
   return (
@@ -24,6 +31,12 @@ export default function Button({
       testID={testID}
       onPress={onPress}
       disabled={isDisabled}
+      accessible
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel || label}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{ disabled: !!isDisabled, busy: !!loading }}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={({ pressed }) => [
         styles.base,
         VARIANTS[variant],
@@ -37,7 +50,11 @@ export default function Button({
       ) : (
         <View style={styles.row}>
           {icon}
-          <Text style={[styles.label, LABEL_VARIANTS[variant], isDisabled && styles.disabledLabel]}>
+          <Text
+            allowFontScaling
+            maxFontSizeMultiplier={2}
+            style={[styles.label, LABEL_VARIANTS[variant], isDisabled && styles.disabledLabel]}
+          >
             {label}
           </Text>
         </View>
@@ -62,15 +79,18 @@ const LABEL_VARIANTS = StyleSheet.create({
 
 const styles = StyleSheet.create({
   base: {
-    minHeight: 50,
+    minHeight: MIN_TAP,
+    minWidth: MIN_TAP,
     paddingHorizontal: space.lg,
+    paddingVertical: 12,
     borderRadius: radius.sm,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 1,
   },
-  row: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  label: { fontSize: 14, fontWeight: '900', letterSpacing: 1, textTransform: 'uppercase' },
+  row: { flexDirection: 'row', alignItems: 'center', gap: space.sm, flexWrap: 'wrap', justifyContent: 'center' },
+  label: { fontSize: 14, fontWeight: '900', letterSpacing: 1, textTransform: 'uppercase', textAlign: 'center' },
   disabled: { backgroundColor: colors.surfaceElevated, borderColor: colors.borderStrong },
   disabledLabel: { color: colors.textTertiary },
 });

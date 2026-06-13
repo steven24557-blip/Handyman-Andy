@@ -244,6 +244,12 @@ export default function DiagnosticScreen() {
             testID="diag-torch-btn"
             onPress={() => setTorchOn((t) => !t)}
             style={[styles.iconChip, torchOn && { backgroundColor: colors.primary }]}
+            accessible
+            accessibilityRole="switch"
+            accessibilityLabel="Camera flashlight"
+            accessibilityState={{ checked: torchOn }}
+            accessibilityHint="Toggles the camera torch for dark job sites"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             {torchOn ? <Zap size={18} color="#0a0a0a" /> : <ZapOff size={18} color={colors.textPrimary} />}
           </Pressable>
@@ -257,16 +263,37 @@ export default function DiagnosticScreen() {
         </View>
 
         <View style={styles.cameraBottomRow}>
-          <Pressable testID="diag-pick-btn" onPress={pickFromLibrary} style={styles.smallShutter}>
+          <Pressable
+            testID="diag-pick-btn"
+            onPress={pickFromLibrary}
+            style={styles.smallShutter}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Pick photo from library"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <ImageIcon size={18} color={colors.textPrimary} />
           </Pressable>
-          <Pressable testID="diag-shutter-btn" onPress={capture} style={styles.shutter}>
+          <Pressable
+            testID="diag-shutter-btn"
+            onPress={capture}
+            style={styles.shutter}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Trigger camera scanner"
+            accessibilityHint="Captures the current frame for AI diagnostic analysis"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
             <View style={styles.shutterInner} />
           </Pressable>
           <Pressable
             testID="diag-flip-btn"
             onPress={() => setFacing((f) => (f === 'back' ? 'front' : 'back'))}
             style={styles.smallShutter}
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Flip camera"
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <RefreshCw size={18} color={colors.textPrimary} />
           </Pressable>

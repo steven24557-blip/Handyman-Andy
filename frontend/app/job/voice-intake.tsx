@@ -78,7 +78,13 @@ export default function VoiceIntake() {
       <View style={styles.body}>
         {processing ? (
           <FadeInView from={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <View style={styles.processing}>
+            <View
+              style={styles.processing}
+              accessible
+              accessibilityLiveRegion="assertive"
+              accessibilityRole="alert"
+              accessibilityLabel="Andy is processing your voice walkthrough. Transcribing audio and generating job structure."
+            >
               <Wand2 size={36} color={colors.primary} />
               <Text style={styles.processingTitle}>ANDY IS LISTENING…</Text>
               <Text style={styles.processingSub}>Transcribing audio · Generating job structure</Text>
@@ -98,10 +104,21 @@ export default function VoiceIntake() {
               testID={recording ? 'voice-stop-btn' : 'voice-start-btn'}
               onPress={recording ? stop : start}
               style={[styles.mic, recording && styles.micActive]}
+              accessible
+              accessibilityRole="button"
+              accessibilityLabel={recording ? 'Stop voice recording' : 'Trigger voice intake recorder'}
+              accessibilityHint={recording ? 'Stops recording and sends audio to AI for transcription' : 'Begins capturing your job walkthrough audio'}
+              accessibilityState={{ busy: recording }}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               {recording ? <Square size={42} color="#0a0a0a" /> : <Mic size={42} color="#0a0a0a" />}
             </Pressable>
-            <Text style={styles.state}>{recording ? 'RECORDING…' : 'TAP TO START'}</Text>
+            <Text
+              style={styles.state}
+              accessible
+              accessibilityLiveRegion="polite"
+              accessibilityRole="text"
+            >{recording ? 'RECORDING…' : 'TAP TO START'}</Text>
 
             {recording && (
               <FadeInView from={{ opacity: 0.4 }} animate={{ opacity: 1 }} transition={{ loop: true, duration: 700 }}>

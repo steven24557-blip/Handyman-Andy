@@ -193,6 +193,12 @@ export default function LoginScreen() {
           disabled={!scrolledToBottom}
           onPress={() => setAgreed((a) => !a)}
           style={[styles.agreeRow, !scrolledToBottom && { opacity: 0.45 }]}
+          accessible
+          accessibilityRole="checkbox"
+          accessibilityLabel="I agree to the Professional Services Disclaimer"
+          accessibilityHint={scrolledToBottom ? 'Activates after you scroll to the end of the disclaimer above' : 'Scroll the disclaimer to the bottom to enable this control'}
+          accessibilityState={{ checked: agreed, disabled: !scrolledToBottom }}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
         >
           <View
             style={[
