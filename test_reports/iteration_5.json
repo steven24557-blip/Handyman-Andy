@@ -1,0 +1,40 @@
+{
+  "summary": "Phase A re-verification after two fixes. Bug A (null-username DuplicateKey) is FULLY FIXED — signup path now uses conditional insert and DB carries a partial-unique index `username_unique_string` with `partialFilterExpression={username:{$type:'string'}}` (verified via list_indexes; legacy sparse `username_1` gone). All 5 signup/validation cases and 4 login cases pass, including two successive no-username signups. Bug B (cluster rate-limit) is PARTIALLY FIXED — storage moved to Mongo (db.rate_limit with TTL) so counts are now shared across pods, BUT the KEY is still derived from `request.client.host`, which resolves to DIFFERENT per-pod peer-IPs (10.232.132.139 vs 10.232.132.140) because uvicorn runs without `--proxy-headers` and there is no XFF extraction. Result: requests round-robin between 2 pods and get keyed as 2 separate buckets, so the effective limit is 2×. 9 wrong-password logins return 9× 401 (never 429). 6 wrong-secret dev-logins return 6× 404 (never 429). Final backend pass rate: 20/21 (95%). The one failing test is the shared root cause for both new asks (login rate-limit AND dev-login brute-force cap). FRONTEND NOT RE-TESTED per request.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/login and POST /api/auth/dev-login (also /forgot-password, /resend-verification, /signup)",
+        "issue": "Rate-limit KEY uses `request.client.host` (server.py:756, 789, 903, 927, 957). Under this K8s deployment the peer IP seen by uvicorn is one of TWO stable values (10.232.132.139 / 10.232.132.140 — the two ingress hops for the two backend pods), NOT the real client IP. Verified by inspecting db.rate_limit after a 6× attack: rows split as 3+3 across the two IPs, so `count >= 5` never triggers on either bucket. Storage IS shared (Mongo), only the KEY is broken. Fix (any one): (a) start uvicorn with `--proxy-headers --forwarded-allow-ips='*'` in /etc/supervisor/conf.d/supervisord.conf; (b) derive client IP in Python via `request.headers.get('x-forwarded-for','').split(',')[0].strip() or request.client.host` and use that in every rate-limit key; (c) for /auth/login, key on identifier alone (`login:{identifier}`) since it is per-account anyway; for /auth/dev-login and /auth/forgot-password, still need real client IP so option (a) or (b) is required. Repro: `for i in {1..6}; do curl -sX POST $URL/api/auth/dev-login -H 'content-type: application/json' -d '{\"email\":\"x@x\",\"name\":\"x\",\"secret\":\"wrong\"}' -o /dev/null -w '%{http_code}\\n'; done` → all 404, expected 5×404 + 1×429."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_a_auth.py",
+    "/app/test_reports/pytest/pytest_iter5.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH, deployment-level) — Restore correct client-IP resolution behind ingress. Preferred: append `--proxy-headers --forwarded-allow-ips=\"*\"` to the uvicorn command in /etc/supervisor/conf.d/supervisord.conf (backend program) and `sudo supervisorctl restart backend`. Verify by re-running `curl` reproducer above — 6th dev-login must return 429. Also verify 9th login attempt returns 429 in test_login_rate_limit.",
+    "FIX (HIGH, code-level alternative) — If proxy-headers cannot be enabled, add a helper `def _client_ip(request): return request.headers.get('x-forwarded-for','').split(',')[0].strip() or (request.client.host if request.client else 'unknown')` and replace every `request.client.host` in server.py:756, 789, 903, 927, 957 with `_client_ip(request)`. Additionally consider keying login rate-limit on identifier only (drop IP) since we already scope per account.",
+    "VERIFY-ONLY — Both other checks from this review already pass: (a) two successive no-username signups return 200/200 (verified via test_signup_then_verify_then_me and duplicate_email path with omitted username — no 500); (b) users indexes contain ONLY `username_unique_string` with partialFilterExpression (legacy sparse `username_1` dropped)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:703-715 — `_rate_limit_db` is well-formed (TTL index + count-then-insert). The lock-out contract is correct at the storage layer; the failing link is upstream KEY construction.",
+    "server.py:756, 789, 903, 927, 957 — All five rate-limit call sites derive IP from `request.client.host`. Behind the K8s ingress this returns a per-pod hop IP, not the client IP. This single defect breaks all four documented cluster-wide limits (signup / login / forgot / resend / dev-login).",
+    "server.py:2058-2066, 2076-2087 — Startup migration is idempotent: drops legacy `username_1`, unsets legacy null usernames, and creates `username_unique_string` with partialFilterExpression. Verified via list_indexes.",
+    "server.py:844-855 — Signup insert doc now sets `username` conditionally (`if uname: new_doc['username'] = uname`). Root cause of Bug A fixed."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "95% (20/21)", "frontend": "not re-tested per request"},
+  "seed_data_creation": "Added ~7 TEST_-prefixed users this run (safe to leave, cleanup: `db.users.delete_many({'email':{'$regex':'^TEST_'}})`). db.rate_limit rows will auto-expire via TTL.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL: https://jobsite-assistant.preview.emergentagent.com. Dev secret: andy_01b0fmH1hvFa3gZFz_SDYQvVchp_t5jzBUIKz6kFH5s. Regression cmd: `EXPO_PUBLIC_BACKEND_URL=<url> pytest /app/backend/tests/test_phase_a_auth.py -v`. Before rerun, purge db.rate_limit to avoid stale carry-over. Deployment fact for future testers: this cluster has TWO backend pods behind the ingress and `request.client.host` returns 10.232.132.139 or 10.232.132.140 depending on which pod handled the request; this is the current blocker for ANY per-IP rate-limit contract.",
+  "rca_of_issue": "Rate-limit RCA (unchanged from iter_4 minor bug, only partially remediated): the Mongo-backed limiter now shares COUNTS across pods, but the primary key includes the pod-visible peer IP. uvicorn is launched without `--proxy-headers`, so `request.client.host` is the last hop before uvicorn — which is a different intermediate for each of the two backend pods in this cluster (observed 10.232.132.139 and 10.232.132.140). K8s load-balances round-robin, so 6 dev-login attempts split 3/3 → each bucket count reaches 3 (< limit=5) → 429 never fires. Same math for login: 9 attempts split 5/4 → each bucket (< limit=8) → 429 never fires. Two fixes both work: (1) uvicorn `--proxy-headers --forwarded-allow-ips='*'` so request.client is derived from X-Forwarded-For; (2) do the XFF parsing manually in the endpoints. Preferred fix is (1) because it also fixes CORS/scheme detection and every future request.client.host lookup at once."
+}

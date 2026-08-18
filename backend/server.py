@@ -40,6 +40,18 @@ EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
 STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 APPLE_CLIENT_ID = os.environ.get("APPLE_CLIENT_ID", "com.andyhandy.app")
 
+# Auth / email
+JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-do-not-use-in-prod")
+ANDY_DEV_SECRET = os.environ.get("ANDY_DEV_SECRET", "")
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:3000").rstrip("/")
+APP_DEEP_LINK_SCHEME = os.environ.get("APP_DEEP_LINK_SCHEME", "andyhandy")
+
+# Emergent-managed email (Resend proxy)
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMERGENT_EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Handy-Andy")
+EMAIL_REPLY_TO = os.environ.get("EMAIL_REPLY_TO")
+
 stripe.api_key = STRIPE_API_KEY
 
 client = AsyncIOMotorClient(MONGO_URL)
@@ -81,6 +93,40 @@ class SessionRequest(BaseModel):
 class DevLoginRequest(BaseModel):
     email: str
     name: Optional[str] = None
+    secret: str
+
+
+class SignUpRequest(BaseModel):
+    email: str
+    password: str
+    username: Optional[str] = None
+    accepted_terms: bool = False
+
+
+class EmailPasswordLoginRequest(BaseModel):
+    identifier: str  # email OR username
+    password: str
+
+
+class UsernameCheckRequest(BaseModel):
+    username: str
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 
 class AppleLoginRequest(BaseModel):
@@ -255,7 +301,10 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
             exp = exp.replace(tzinfo=timezone.utc)
         if exp < datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Session expired")
-    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    user = await db.users.find_one(
+        {"user_id": session["user_id"]},
+        {"_id": 0, "password_hash": 0, "email_verification_token": 0, "password_reset_token": 0},
+    )
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
@@ -439,6 +488,246 @@ async def _ensure_user_billing_fields(user: dict):
 
 
 # ============================================================
+# Email (Emergent Resend) — guardrail gate + async send
+# ============================================================
+import ipaddress as _ipaddress
+from html import escape as _html_escape
+from html.parser import HTMLParser as _HTMLParser
+from urllib.parse import urlparse as _urlparse
+from passlib.hash import bcrypt as _bcrypt
+
+_SHORTENERS = ("bit.ly", "tinyurl.com", "t.co", "is.gd", "cutt.ly", "goo.gl", "rebrand.ly")
+_CRED_ASK = (
+    "reply with your password", "reply with the code", "send your password", "cvv",
+    "send us your password", "enter your password below", "confirm your card number",
+    "your full card number", "seed phrase", "recovery phrase", "verify your card",
+    "social security number", "confirm your bank details",
+)
+_HOSTISH = re.compile(r"\b(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})", re.I)
+
+
+def _host_ok(host: str) -> bool:
+    if not host or "xn--" in host:
+        return False
+    try:
+        _ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return not any(host == s or host.endswith("." + s) for s in _SHORTENERS)
+
+
+def _same_site(shown: str, real: str) -> bool:
+    return shown == real or real.endswith("." + shown) or shown.endswith("." + real)
+
+
+class _EmailScan(_HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.tags: set = set()
+        self.urls: list = []
+        self.anchors: list = []
+        self._href = None
+        self._text: list = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.add(tag.lower())
+        self.urls += [v for k, v in attrs if k.lower() in ("href", "src") and v]
+        if tag.lower() == "a":
+            self._href = dict((k.lower(), v) for k, v in attrs).get("href")
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "a" and self._href is not None:
+            self.anchors.append((self._href, "".join(self._text)))
+            self._href, self._text = None, []
+
+
+def _assert_safe_email(subject: str, html: str) -> None:
+    scan = _EmailScan()
+    scan.feed(html)
+    if scan.tags & {"form", "input", "textarea", "select"}:
+        raise ValueError("No forms or input fields in email (G2)")
+    body = f"{subject}\n{html}".lower()
+    for p in _CRED_ASK:
+        if p in body:
+            raise ValueError(f"Email asks the recipient for credentials: {p!r} (G2)")
+    for url in scan.urls:
+        low = url.strip().lower()
+        if low.startswith(("mailto:", "tel:", "cid:", "#")):
+            continue
+        if not low.startswith("https://"):
+            raise ValueError(f"Email links/assets must be absolute https: {url!r} (G3)")
+        host = _urlparse(low).hostname or ""
+        if not _host_ok(host) or _urlparse(low).username is not None:
+            raise ValueError(f"Shortened/numeric-host/creds URL: {url!r} (G3)")
+    for href, text in scan.anchors:
+        real = _urlparse(href.strip().lower()).hostname or ""
+        if not real:
+            continue
+        for m in _HOSTISH.finditer(text):
+            if not _same_site(m.group(1).lower(), real):
+                raise ValueError(f"Anchor text {m.group(1)!r} != real link host {real!r} (G3)")
+
+
+async def _send_email(*, to: str, subject: str, html: str) -> Optional[str]:
+    if not EMERGENT_EMAIL_KEY:
+        logger.warning("Email disabled: EMERGENT_EMAIL_KEY not configured")
+        return None
+    _assert_safe_email(subject, html)
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    if EMAIL_REPLY_TO:
+        payload["contact_email"] = EMAIL_REPLY_TO
+    try:
+        async with httpx.AsyncClient(timeout=30) as h:
+            r = await h.post(
+                f"{EMAIL_BASE_URL}/api/v1/email/send",
+                headers={"X-Email-Key": EMERGENT_EMAIL_KEY},
+                json=payload,
+            )
+        r.raise_for_status()
+        return r.json().get("id")
+    except httpx.HTTPStatusError as e:
+        logger.error("Email send failed: %s %s", e.response.status_code, e.response.text)
+        return None
+    except Exception as e:
+        logger.error("Email send error: %s", e)
+        return None
+
+
+def _brand_email(preheader: str, body_html: str, cta_url: Optional[str] = None, cta_label: Optional[str] = None) -> str:
+    """Server-side branded email template. Body is passed already-escaped HTML."""
+    cta_html = ""
+    if cta_url and cta_label:
+        cta_html = (
+            f'<tr><td align="center" style="padding:24px 0">'
+            f'<a href="{cta_url}" style="background:#eab308;color:#0a0a0a;padding:14px 28px;'
+            f'text-decoration:none;font-family:Arial,sans-serif;font-weight:bold;'
+            f'letter-spacing:1px;border-radius:6px;display:inline-block">{_html_escape(cta_label)}</a>'
+            f'</td></tr>'
+        )
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="background:#09090b;padding:24px 0;font-family:Arial,sans-serif">'
+        '<tr><td align="center">'
+        '<table role="presentation" width="560" cellpadding="0" cellspacing="0" '
+        'style="background:#18181b;border-radius:10px;padding:32px">'
+        f'<tr><td style="color:#eab308;font-weight:900;font-size:22px;letter-spacing:3px;'
+        f'padding-bottom:16px;border-bottom:2px solid #27272a">HANDY-ANDY</td></tr>'
+        f'<tr><td style="color:#a1a1aa;font-size:12px;padding:16px 0 8px 0">'
+        f'{_html_escape(preheader)}</td></tr>'
+        f'<tr><td style="color:#f4f4f5;font-size:15px;line-height:22px;padding:8px 0">'
+        f'{body_html}</td></tr>'
+        f'{cta_html}'
+        '<tr><td style="color:#71717a;font-size:11px;padding-top:24px;border-top:1px solid #27272a">'
+        'Sent by Handy-Andy: Job Site Assistant. We will never ask for your password or '
+        'card details by email. If you did not request this, you can safely ignore it.'
+        '</td></tr>'
+        '</table></td></tr></table>'
+    )
+
+
+# ============================================================
+# Auth utilities — password hashing + rate limiting
+# ============================================================
+def _hash_password(plain: str) -> str:
+    # Bcrypt truncates at 72 bytes; enforce here to fail loud.
+    if len(plain.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password too long (max 72 chars)")
+    return _bcrypt.hash(plain)
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return _bcrypt.verify(plain, hashed)
+    except Exception:
+        return False
+
+
+def _password_strength(pw: str) -> tuple:
+    """Return (score 0-4, errors: list[str])."""
+    errs = []
+    if len(pw) < 8:
+        errs.append("At least 8 characters required")
+    score = 0
+    if len(pw) >= 8: score += 1
+    if re.search(r"[A-Z]", pw): score += 1
+    if re.search(r"[a-z]", pw): score += 1
+    if re.search(r"\d", pw): score += 1
+    if re.search(r"[^A-Za-z0-9]", pw): score += 1
+    return min(score, 4), errs
+
+
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,20}$")
+
+
+def _norm_email(email: str) -> str:
+    email = (email or "").strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Invalid email address")
+    return email
+
+
+def _norm_username(username: Optional[str]) -> Optional[str]:
+    if not username:
+        return None
+    username = username.strip().lower()
+    if not _USERNAME_RE.match(username):
+        raise HTTPException(status_code=400, detail="Username must be 3-20 characters (letters, numbers, underscore)")
+    return username
+
+
+# In-process rate limit — fine for `username-check` where cluster consistency
+# is not security-critical.
+_RATE_BUCKETS: dict = {}
+
+
+def _rate_limit(key: str, limit: int, window_s: int):
+    now = time.time()
+    bucket = _RATE_BUCKETS.setdefault(key, [])
+    while bucket and bucket[0] < now - window_s:
+        bucket.pop(0)
+    if len(bucket) >= limit:
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment and try again.")
+    bucket.append(now)
+
+
+# Cluster-safe rate limit backed by Mongo — used for security-critical
+# endpoints (login / forgot-password / resend / signup / dev-login) so the
+# ceiling holds across pods. TTL index on `expires_at` sweeps stale rows.
+def _client_ip(request: Request) -> str:
+    """Real client IP behind the ingress. `request.client.host` returns the
+    kube-proxy peer (one per pod) which round-robins across pods and breaks
+    per-IP counters. `X-Forwarded-For` is populated by the ingress and gives
+    us the actual originating address."""
+    xff = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    if xff:
+        # XFF is a comma-separated chain — the left-most entry is the client.
+        return xff.split(",")[0].strip()
+    return (request.client.host if request.client else "unknown") or "unknown"
+
+
+async def _rate_limit_db(key: str, limit: int, window_s: int) -> None:
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=window_s)
+    # Purge stale hits for this key (belt-and-suspenders — TTL already handles it).
+    await db.rate_limit.delete_many({"key": key, "expires_at": {"$lt": now}})
+    count = await db.rate_limit.count_documents({"key": key, "created_at": {"$gte": cutoff}})
+    if count >= limit:
+        raise HTTPException(status_code=429, detail="Too many requests. Please wait a moment and try again.")
+    await db.rate_limit.insert_one({
+        "key": key,
+        "created_at": now,
+        "expires_at": now + timedelta(seconds=window_s),
+    })
+
+
+# ============================================================
 # Auth
 # ============================================================
 @api.post("/auth/session")
@@ -465,17 +754,267 @@ async def create_session(payload: SessionRequest):
     if not email:
         raise HTTPException(status_code=400, detail="No email in session data")
 
-    return await _login_user(email=email, name=name, picture=picture, session_token=session_token)
+    return await _login_user(
+        email=email, name=name, picture=picture, session_token=session_token,
+        auth_provider="google", email_verified=True,
+    )
 
 
 @api.post("/auth/dev-login")
-async def dev_login(payload: DevLoginRequest):
-    email = payload.email.strip().lower()
-    if not email or "@" not in email:
-        raise HTTPException(status_code=400, detail="Valid email required")
+async def dev_login(payload: DevLoginRequest, request: Request):
+    """Hidden developer bypass — requires a shared secret from the env.
+    Regular users NEVER see or hit this endpoint.
+    """
+    ip = _client_ip(request)
+    # Brute-force resistance: hard cap 5 dev attempts / hour / IP.
+    await _rate_limit_db(f"devlogin:{ip}", 5, 60 * 60)
+    if not ANDY_DEV_SECRET or payload.secret != ANDY_DEV_SECRET:
+        # Never disclose whether the secret is unset vs mismatched.
+        raise HTTPException(status_code=404, detail="Not found")
+    email = _norm_email(payload.email)
     name = payload.name or email.split("@", 1)[0].title()
     session_token = f"dev_{uuid.uuid4().hex}"
-    return await _login_user(email=email, name=name, picture=None, session_token=session_token)
+    return await _login_user(
+        email=email, name=name, picture=None, session_token=session_token,
+        auth_provider="dev", email_verified=True,
+    )
+
+
+# ---------- Email / password auth ----------
+def _issue_session_token(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+@api.post("/auth/username-check")
+async def username_check(payload: UsernameCheckRequest):
+    _rate_limit("username_check", 30, 60)
+    uname = _norm_username(payload.username)
+    if not uname:
+        return {"available": False, "reason": "invalid"}
+    existing = await db.users.find_one({"username": uname}, {"_id": 0, "user_id": 1})
+    return {"available": existing is None, "username": uname}
+
+
+@api.post("/auth/signup")
+async def email_signup(payload: SignUpRequest, request: Request):
+    ip = _client_ip(request)
+    _rate_limit(f"signup:{ip}", 10, 60 * 60)  # in-process fallback + shared below
+    await _rate_limit_db(f"signup:{ip}", 10, 60 * 60)  # 10/hr per IP (cluster-safe)
+
+    if not payload.accepted_terms:
+        raise HTTPException(status_code=400, detail="You must accept the Terms of Service and Privacy Policy")
+
+    email = _norm_email(payload.email)
+    strength, errs = _password_strength(payload.password)
+    if errs:
+        raise HTTPException(status_code=400, detail=errs[0])
+
+    uname = _norm_username(payload.username) if payload.username else None
+    if uname:
+        existing_u = await db.users.find_one({"username": uname}, {"_id": 0})
+        if existing_u:
+            raise HTTPException(status_code=409, detail="That username is already taken")
+
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    if existing and existing.get("password_hash"):
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    pw_hash = _hash_password(payload.password)
+    now = datetime.now(timezone.utc)
+    verify_token = uuid.uuid4().hex + uuid.uuid4().hex
+    verify_expires = now + timedelta(hours=24)
+
+    if existing:
+        # OAuth user linking a password → allowed, still require verification.
+        user_id = existing["user_id"]
+        set_updates: dict = {
+            "password_hash": pw_hash,
+            "email_verification_token": verify_token,
+            "email_verification_expires": verify_expires,
+            "email_verified": existing.get("email_verified", False),
+            "auth_provider": existing.get("auth_provider", "email"),
+        }
+        unset_updates: dict = {}
+        if uname:
+            set_updates["username"] = uname
+        else:
+            # Do not set username:null — the sparse unique index treats null as
+            # a real value on subsequent inserts and would produce dup-key errors.
+            unset_updates["username"] = ""
+        update_doc: dict = {"$set": set_updates}
+        if unset_updates:
+            update_doc["$unset"] = unset_updates
+        await db.users.update_one({"user_id": user_id}, update_doc)
+    else:
+        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        new_doc: dict = {
+            "user_id": user_id,
+            "email": email,
+            "name": (uname or email.split("@", 1)[0]).title(),
+            "picture": None,
+            "password_hash": pw_hash,
+            "email_verified": False,
+            "email_verification_token": verify_token,
+            "email_verification_expires": verify_expires,
+            "auth_provider": "email",
+            "created_at": now,
+        }
+        # Never write username:null — sparse unique index only skips MISSING
+        # fields, not explicit null values.
+        if uname:
+            new_doc["username"] = uname
+        await db.users.insert_one(new_doc)
+
+    verify_url = f"{APP_BASE_URL}/verify-email?token={verify_token}"
+    html = _brand_email(
+        preheader="Verify your email to finish creating your Handy-Andy account.",
+        body_html=(
+            "<p>Welcome to Handy-Andy.</p>"
+            "<p>Tap the button below to verify your email address. This link expires in 24 hours.</p>"
+        ),
+        cta_url=verify_url,
+        cta_label="VERIFY EMAIL",
+    )
+    await _send_email(to=email, subject="Verify your Handy-Andy email", html=html)
+
+    return {"ok": True, "email_verification_sent": True, "email": email}
+
+
+@api.post("/auth/verify-email")
+async def verify_email(payload: VerifyEmailRequest):
+    token = payload.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing token")
+    user = await db.users.find_one({"email_verification_token": token}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification link")
+    expires = user.get("email_verification_expires")
+    if expires and isinstance(expires, datetime):
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Verification link has expired. Request a new one.")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"email_verified": True},
+         "$unset": {"email_verification_token": "", "email_verification_expires": ""}},
+    )
+    # Auto-login on successful verification.
+    st = _issue_session_token("email")
+    return await _login_user(
+        email=user["email"], name=user.get("name") or user["email"],
+        picture=user.get("picture"), session_token=st,
+        auth_provider=user.get("auth_provider", "email"),
+        email_verified=True,
+    )
+
+
+@api.post("/auth/resend-verification")
+async def resend_verification(payload: ResendVerificationRequest, request: Request):
+    ip = _client_ip(request)
+    await _rate_limit_db(f"resend:{ip}", 5, 15 * 60)  # 5 / 15min per IP (cluster-safe)
+    email = _norm_email(payload.email)
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    # Silent success — do not disclose existence.
+    if not user or user.get("email_verified"):
+        return {"ok": True}
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    expires = datetime.now(timezone.utc) + timedelta(hours=24)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"email_verification_token": token, "email_verification_expires": expires}},
+    )
+    verify_url = f"{APP_BASE_URL}/verify-email?token={token}"
+    html = _brand_email(
+        preheader="A new verification link is on its way.",
+        body_html="<p>Here is a fresh verification link. It expires in 24 hours.</p>",
+        cta_url=verify_url, cta_label="VERIFY EMAIL",
+    )
+    await _send_email(to=email, subject="Your new Handy-Andy verification link", html=html)
+    return {"ok": True}
+
+
+@api.post("/auth/login")
+async def email_password_login(payload: EmailPasswordLoginRequest, request: Request):
+    ip = _client_ip(request)
+    identifier = (payload.identifier or "").strip().lower()
+    await _rate_limit_db(f"login:{ip}:{identifier}", 8, 5 * 60)  # 8 / 5min (cluster-safe)
+
+    if not identifier or not payload.password:
+        raise HTTPException(status_code=400, detail="Enter your email or username and password")
+
+    # identifier = email OR username
+    query = {"$or": [{"email": identifier}, {"username": identifier}]}
+    user = await db.users.find_one(query, {"_id": 0})
+    if not user or not user.get("password_hash"):
+        # Uniform error to avoid leaking account existence.
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not _verify_password(payload.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.get("email_verified"):
+        raise HTTPException(status_code=403, detail="Please verify your email before signing in")
+
+    st = _issue_session_token("email")
+    return await _login_user(
+        email=user["email"], name=user.get("name") or user["email"],
+        picture=user.get("picture"), session_token=st,
+        auth_provider=user.get("auth_provider", "email"),
+        email_verified=True,
+    )
+
+
+@api.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest, request: Request):
+    ip = _client_ip(request)
+    await _rate_limit_db(f"forgot:{ip}", 5, 15 * 60)  # cluster-safe
+    email = _norm_email(payload.email)
+    user = await db.users.find_one({"email": email}, {"_id": 0})
+    # ALWAYS return ok — never disclose whether the email exists.
+    if user and user.get("password_hash"):
+        token = uuid.uuid4().hex + uuid.uuid4().hex
+        expires = datetime.now(timezone.utc) + timedelta(hours=1)
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"password_reset_token": token, "password_reset_expires": expires}},
+        )
+        reset_url = f"{APP_BASE_URL}/reset-password?token={token}"
+        html = _brand_email(
+            preheader="Reset your Handy-Andy password.",
+            body_html=(
+                "<p>Someone (hopefully you) asked to reset the Handy-Andy password on this address.</p>"
+                "<p>This link expires in 1 hour. If it was not you, no action is needed.</p>"
+            ),
+            cta_url=reset_url, cta_label="RESET PASSWORD",
+        )
+        await _send_email(to=email, subject="Reset your Handy-Andy password", html=html)
+    return {"ok": True}
+
+
+@api.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    token = payload.token.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing token")
+    strength, errs = _password_strength(payload.new_password)
+    if errs:
+        raise HTTPException(status_code=400, detail=errs[0])
+    user = await db.users.find_one({"password_reset_token": token}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    expires = user.get("password_reset_expires")
+    if expires and isinstance(expires, datetime):
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < datetime.now(timezone.utc):
+            raise HTTPException(status_code=400, detail="Reset link has expired. Please request a new one.")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_hash": _hash_password(payload.new_password), "email_verified": True},
+         "$unset": {"password_reset_token": "", "password_reset_expires": ""}},
+    )
+    # Invalidate all existing sessions on password reset (security best practice).
+    await db.user_sessions.delete_many({"user_id": user["user_id"]})
+    return {"ok": True}
 
 
 @api.post("/auth/apple")
@@ -498,30 +1037,42 @@ async def apple_login(payload: AppleLoginRequest):
         email = f"apple_{sub}@privaterelay.appleid.com"
     name = payload.full_name or email.split("@", 1)[0].title()
     session_token = f"apple_{uuid.uuid4().hex}"
-    return await _login_user(email=email, name=name, picture=None, session_token=session_token, apple_sub=sub)
+    return await _login_user(
+        email=email, name=name, picture=None, session_token=session_token,
+        apple_sub=sub, auth_provider="apple", email_verified=True,
+    )
 
 
-async def _login_user(email: str, name: str, picture: Optional[str], session_token: str, apple_sub: Optional[str] = None):
+async def _login_user(
+    email: str, name: str, picture: Optional[str], session_token: str,
+    apple_sub: Optional[str] = None,
+    auth_provider: Optional[str] = None,
+    email_verified: Optional[bool] = None,
+):
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         user_id = existing["user_id"]
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"name": name, "picture": picture, **({"apple_sub": apple_sub} if apple_sub else {})}},
-        )
+        updates: dict = {"name": name, "picture": picture}
+        if apple_sub:
+            updates["apple_sub"] = apple_sub
+        if auth_provider and not existing.get("auth_provider"):
+            updates["auth_provider"] = auth_provider
+        if email_verified is True:
+            updates["email_verified"] = True
+        await db.users.update_one({"user_id": user_id}, {"$set": updates})
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc)
-        await db.users.insert_one(
-            {
-                "user_id": user_id,
-                "email": email,
-                "name": name,
-                "picture": picture,
-                "apple_sub": apple_sub,
-                "created_at": now,
-            }
-        )
+        await db.users.insert_one({
+            "user_id": user_id,
+            "email": email,
+            "name": name,
+            "picture": picture,
+            "apple_sub": apple_sub,
+            "auth_provider": auth_provider or "oauth",
+            "email_verified": bool(email_verified),
+            "created_at": now,
+        })
     await _provision_user_defaults(user_id)
 
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
@@ -537,7 +1088,7 @@ async def _login_user(email: str, name: str, picture: Optional[str], session_tok
         },
         upsert=True,
     )
-    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0, "email_verification_token": 0, "password_reset_token": 0})
     await _ensure_user_billing_fields(user_doc)
     return {"session_token": session_token, "user": user_doc, "expires_at": expires_at}
 
@@ -1517,6 +2068,13 @@ async def _on_start():
         await asyncio.gather(
             db.users.create_index("email", unique=True),
             db.users.create_index("user_id", unique=True),
+            db.users.create_index(
+                "username", unique=True,
+                partialFilterExpression={"username": {"$type": "string"}},
+                name="username_unique_string",
+            ),
+            db.users.create_index("email_verification_token", sparse=True),
+            db.users.create_index("password_reset_token", sparse=True),
             db.user_sessions.create_index("session_token", unique=True),
             db.user_sessions.create_index("user_id"),
             db.user_sessions.create_index("expires_at", expireAfterSeconds=0),
@@ -1524,7 +2082,20 @@ async def _on_start():
             db.jobs.create_index("job_id", unique=True),
             db.audit_log.create_index("user_id"),
             db.audit_log.create_index("timestamp"),
+            db.rate_limit.create_index("key"),
+            db.rate_limit.create_index("expires_at", expireAfterSeconds=0),
         )
+        # Migration: strip any legacy null usernames so the partial-unique index
+        # doesn't collide when a fresh signup lands.
+        try:
+            await db.users.update_many({"username": None}, {"$unset": {"username": ""}})
+        except Exception:
+            pass
+        # Drop legacy sparse-unique index if it exists (predecessor of partial).
+        try:
+            await db.users.drop_index("username_1")
+        except Exception:
+            pass
     except Exception as e:
         # Never fail startup on index creation — the app can still serve.
         logger.warning("Index creation deferred: %s", e)

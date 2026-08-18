@@ -6,7 +6,9 @@ type User = { user_id: string; email: string; name: string; picture?: string } |
 type AuthState = {
   user: User;
   loading: boolean;
-  signInDev: (email: string, name?: string) => Promise<void>;
+  signInDev: (email: string, secret: string, name?: string) => Promise<void>;
+  signInWithEmail: (identifier: string, password: string) => Promise<void>;
+  signUpWithEmail: (email: string, password: string, username?: string, accepted_terms?: boolean) => Promise<{ email_verification_sent: boolean; email: string }>;
   /** Exchange a one-time Emergent `session_id` (from the OAuth redirect) for
    *  our own bearer via `POST /api/auth/session`. Do NOT pass a session_token. */
   consumeSessionId: (sessionId: string) => Promise<void>;
@@ -43,10 +45,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(payload.user);
   }, []);
 
-  const signInDev = useCallback(async (email: string, name?: string) => {
-    const res = await api.devLogin(email, name);
+  const signInDev = useCallback(async (email: string, secret: string, name?: string) => {
+    const res = await api.devLogin(email, secret, name);
     await installSession(res);
   }, [installSession]);
+
+  const signInWithEmail = useCallback(async (identifier: string, password: string) => {
+    const res = await api.emailLogin(identifier, password);
+    await installSession(res);
+  }, [installSession]);
+
+  const signUpWithEmail = useCallback(async (
+    email: string, password: string, username?: string, accepted_terms?: boolean,
+  ) => {
+    const res = await api.signup(email, password, username, accepted_terms);
+    return { email_verification_sent: res.email_verification_sent, email: res.email };
+  }, []);
 
   const consumeSessionId = useCallback(async (sessionId: string) => {
     const res = await api.exchangeSession(sessionId);
@@ -60,7 +74,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, signInDev, consumeSessionId, installSession, signOut, refresh }}>
+    <AuthContext.Provider value={{
+      user, loading,
+      signInDev, signInWithEmail, signUpWithEmail,
+      consumeSessionId, installSession, signOut, refresh,
+    }}>
       {children}
     </AuthContext.Provider>
   );

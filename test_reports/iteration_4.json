@@ -1,0 +1,54 @@
+{
+  "summary": "Phase A auth (email/password + username + verification + forgot/reset + hidden dev access) — 18/21 backend tests passing (86%). ALL frontend screens render correctly and hidden dev modal (7 taps on v2.0.0) works. Found ONE real backend bug and ONE architectural rate-limit gap. Bug A (HIGH): POST /api/auth/signup returns 500 (DuplicateKeyError) on the 2nd signup that omits `username` — the users collection has a sparse unique index on `username` but the insert stores `{username: null}` explicitly, so sparse does NOT skip it and Mongo blocks the second null. Bug B (MEDIUM): login rate limiter (`_rate_limit`) uses process-local `_RATE_BUCKETS`; the backend runs 2 pods (10.232.132.139 and 10.232.132.140) behind the ingress, so 9 wrong-password attempts get split across pods and never trip 429. Passing tests: signup end-to-end, verify-email, /auth/me, username availability, duplicate email, duplicate username, weak password, invalid username format, missing terms, login-with-email, login-with-username, wrong password, forgot-nonexistent-returns-200, dev-login missing/wrong/correct secret, OAuth session invalid → 401, dev-token → /api/jobs seeded jobs. Frontend verified: /login shows Google button + EMAIL/USERNAME tabs + Sign In + Forgot + Create account + v2.0.0 with NO Dev Login button; /signup has strength meter and terms checkbox; /forgot-password has KeyRound icon; /verify-email shows resend form; /reset-password shows password + confirm + strength; 7-tap on v2.0.0 opens DEVELOPER ACCESS modal with email + shared-secret inputs (hidden by default). Deprecated packages detected: none. React Native warnings (non-blocking, pre-existing from iter_3): shadow* props deprecated, useNativeDriver on web.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/auth/signup",
+        "issue": "Second signup that omits username crashes with 500 DuplicateKeyError. The insert path (server.py:809) writes `\"username\": uname` where uname is None → Mongo stores {username: null}. The `username_1` index is unique+sparse but sparse only skips MISSING fields, not null values. First null-username user succeeds; every subsequent one 500s. Reproduction: two signups back-to-back without username. Fix options: (a) omit the `username` key from the insert doc when uname is None, e.g. `doc = {...}; if uname: doc['username'] = uname`; (b) recreate the index with `partialFilterExpression={'username': {'$type': 'string'}}`. Log excerpt: `pymongo.errors.DuplicateKeyError: E11000 duplicate key error collection: jp_handyman.users index: username_1 dup key: { username: null }`.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/login (and forgot/resend/signup)",
+        "issue": "In-memory rate limiter (`_RATE_BUCKETS` in server.py:686) is per-pod. Deployment runs ≥2 pods (observed 10.232.132.139 and 10.232.132.140 in logs), so K8s round-robin halves the effective limit and stops it from triggering under normal test load. Result: `test_login_rate_limit` sees 9 401s instead of 8×401 + 1×429. For a real DoS it doubles the allowed rate, which is acceptable for MVP but breaks a documented behavioural contract. Fix: back rate-limiting with Mongo or Redis, or key by X-Forwarded-For + endpoint, or accept the drift and adjust the spec."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Non-blocking console warning: '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Emitted repeatedly on /login, /signup, /forgot-password, /verify-email, /reset-password."},
+      {"component": "Animated (useNativeDriver on web)", "issue": "Non-blocking console warning: 'useNativeDriver is not supported because the native animated module is missing.' Web-preview only; irrelevant on native iOS/Android builds."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_a_auth.py",
+    "/app/test_reports/pytest/pytest_phase_a.xml"
+  ],
+  "action_items": [
+    "FIX (HIGH) — /app/backend/server.py:809: stop inserting `username: null`. Build the insert doc conditionally so the field is only present when a username is provided. As a hardening bonus, re-create the index as `partialFilterExpression={'username': {'$type':'string'}}` and drop existing null-username rows.",
+    "FIX (MEDIUM) — Rate limiter is single-pod only. Either (a) move `_RATE_BUCKETS` to Mongo (TTL collection) or Redis, or (b) update the documented rate limits to reflect per-pod behaviour, or (c) pin auth traffic to a single pod. Right now the login lockout doc contract (8 in 5 min) is not enforced across the cluster.",
+    "(Retest) After the two fixes above are applied, rerun `pytest /app/backend/tests/test_phase_a_auth.py -v` — all 21 tests should turn green.",
+    "(Optional, low priority) Silence RN 0.76+ warnings by migrating shadow* → boxShadow across the app."
+  ],
+  "critical_code_review_comments": [
+    "server.py:788-822 — signup path builds two insert docs (existing OAuth user linking password vs new user); the new-user branch unconditionally sets `\"username\": uname` even when None, which is the root cause of the DuplicateKey 500. Same pattern must be avoided anywhere else that writes optional-unique fields.",
+    "server.py:686-697 — `_rate_limit` is in-process only and there is no comment marking it as single-pod. Given the deployment target is K8s with horizontal scaling, this should be called out or replaced.",
+    "server.py:902 — login `$or: [{email},{username}]` correctly supports either identifier. Combined with `_norm_email`/`_norm_username` at signup, case is handled.",
+    "server.py:922-945 — forgot-password never discloses account existence (always 200). Verified via test.",
+    "server.py:964-971 — reset-password invalidates all sessions on success. Verified end-to-end (old session token returns 401 after reset).",
+    "server.py:733-747 — dev-login requires a matching secret AND returns 404 (never 401/403) on mismatch, avoiding endpoint-existence leakage. Verified via three cases (422 missing / 404 wrong / 200 correct)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_a_auth.py (new — 21 tests, 8s wall time)"
+  ],
+  "success_rate": {"backend": "86% (18/21)", "frontend": "100% (all 5 screens render + hidden dev modal works)"},
+  "seed_data_creation": "Created ~15 TEST_-prefixed users during pytest run; visible in db.users. Safe to leave; email prefix makes cleanup trivial (`db.users.delete_many({\"email\": {\"$regex\": \"^TEST_\"}})`).",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL: EXPO_PUBLIC_BACKEND_URL=https://jobsite-assistant.preview.emergentagent.com. Dev secret from /app/backend/.env: ANDY_DEV_SECRET=andy_01b0fmH1hvFa3gZFz_SDYQvVchp_t5jzBUIKz6kFH5s. Regression: `pytest /app/backend/tests/test_phase_a_auth.py -v`. To reproduce Bug A manually: `curl -X POST $URL/api/auth/signup -H 'content-type: application/json' -d '{\"email\":\"a@x.test\",\"password\":\"Str0ng!Pass2\",\"accepted_terms\":true}'` twice with different emails — the second call 500s. Backend runs multiple pods (>=2) so any in-memory state (rate buckets included) is NOT globally consistent.",
+  "rca_of_issue": "Bug A RCA: server.py `email_signup` builds the new-user insert doc as a dict literal that unconditionally contains `\"username\": uname`. When the signup omits the optional `username` field, `uname` is None and the doc is inserted as `{..., username: null, ...}`. MongoDB’s sparse unique index on `username` treats missing keys as absent BUT stores null values in the index (docs: 'A sparse index only skips documents that don’t include the indexed field(s).'). Consequence: the FIRST null-username signup succeeds; the SECOND collides on `{username: null}` and pymongo raises DuplicateKeyError → FastAPI returns 500. Mitigation: either build the doc without the username key when unset, or convert the index to a partial index filtered on `{'username': {'$type':'string'}}` and purge existing null rows. Bug B RCA: `_rate_limit` uses a module-level dict; when the app is deployed across N pods behind a load balancer, each pod maintains its own bucket, effectively multiplying the allowed rate by N and preventing 429 from firing under evenly-distributed traffic. This is expected behaviour for in-process rate limiters and needs a centralized store (Mongo TTL / Redis) to enforce the documented cluster-wide contract."
+}

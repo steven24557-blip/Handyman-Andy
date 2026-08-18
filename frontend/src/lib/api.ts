@@ -45,10 +45,24 @@ function safeJson(t: string) { try { return JSON.parse(t); } catch { return { ra
 
 export const api = {
   // Auth
-  devLogin: (email: string, name?: string) => request<{ session_token: string; user: any }>('/auth/dev-login', 'POST', { email, name }),
+  devLogin: (email: string, secret: string, name?: string) =>
+    request<{ session_token: string; user: any }>('/auth/dev-login', 'POST', { email, secret, name }),
   exchangeSession: (session_id: string) => request<{ session_token: string; user: any }>('/auth/session', 'POST', { session_id }),
   appleLogin: (identity_token: string, full_name?: string, email?: string) =>
     request<{ session_token: string; user: any }>('/auth/apple', 'POST', { identity_token, full_name, email }),
+
+  // Email / password auth
+  usernameCheck: (username: string) => request<{ available: boolean; username?: string; reason?: string }>('/auth/username-check', 'POST', { username }),
+  signup: (email: string, password: string, username?: string, accepted_terms?: boolean) =>
+    request<{ ok: boolean; email_verification_sent: boolean; email: string }>('/auth/signup', 'POST', { email, password, username, accepted_terms }),
+  verifyEmail: (token: string) => request<{ session_token: string; user: any }>('/auth/verify-email', 'POST', { token }),
+  resendVerification: (email: string) => request<{ ok: boolean }>('/auth/resend-verification', 'POST', { email }),
+  emailLogin: (identifier: string, password: string) =>
+    request<{ session_token: string; user: any }>('/auth/login', 'POST', { identifier, password }),
+  forgotPassword: (email: string) => request<{ ok: boolean }>('/auth/forgot-password', 'POST', { email }),
+  resetPassword: (token: string, new_password: string) =>
+    request<{ ok: boolean }>('/auth/reset-password', 'POST', { token, new_password }),
+
   me: () => request<{ user: any; is_pro: boolean }>('/auth/me'),
   logout: () => request('/auth/logout', 'POST'),
   deleteAccount: () => request('/auth/account', 'DELETE'),

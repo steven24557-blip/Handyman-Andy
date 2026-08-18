@@ -1,0 +1,32 @@
+{
+  "summary": "Phase A auth re-verification after `_client_ip` XFF helper landed — FULLY PASSING. All 21 pytest cases in test_phase_a_auth.py return green (up from 20/21 last iter). Rate-limit contract now holds cluster-wide: with a stable X-Forwarded-For the 9th wrong login → 429, and 6th wrong dev-login → 429. With a different XFF the same request gets its own fresh bucket (404). The `_client_ip` helper (server.py:703-712) is correctly implemented — reads left-most XFF entry, falls back to X-Real-IP, then request.client.host. No regressions: signup/login/verify/forgot/reset all return expected codes. Test file updated so each test carries a unique synthetic XFF header so tests do NOT share a single 10/hr signup bucket in Mongo (previously two tests failed because the whole suite fired >10 signups from the tester's real client IP and legitimately hit the cluster-wide cap).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_a_auth.py",
+    "/app/test_reports/pytest/pytest_iter6.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:703-712 — `_client_ip` correctly implements XFF (left-most) → X-Real-IP → request.client.host fallback chain. Left-most XFF strip preserves the true origin behind the ingress.",
+    "server.py:768, 800, 914, 939, 968 — all five security-critical endpoints (dev-login / signup / resend / login / forgot) now derive their rate-limit key via `_client_ip(request)` instead of raw `request.client.host`. Verified via 6× dev-login reproducer: identical XFF → 5×404 then 429; different XFF → new bucket returns 404.",
+    "server.py:1984 — one remaining `request.client.host if request.client else None` usage in an OAuth session store (not a rate-limit key, so not a security issue). Optional cleanup: route it through `_client_ip(request)` for consistency."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_a_auth.py — added `_fake_ip()` helper; each `api` fixture invocation now stamps a unique X-Forwarded-For so tests do not share the 10/hr per-IP signup bucket. `TestRateLimit.test_login_rate_limit` uses its own stable XFF so all 9 attempts land in the same bucket regardless of ingress path."
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "not in scope"},
+  "seed_data_creation": "~10 TEST_-prefixed user rows created by the pytest run (safe; cleanup regex `^TEST_`). db.rate_limit rows will TTL-expire.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL: https://jobsite-assistant.preview.emergentagent.com. Dev secret in /app/memory/test_credentials.md. Regression cmd: `EXPO_PUBLIC_BACKEND_URL=<url> MONGO_URL=mongodb://localhost:27017 DB_NAME=jp_handyman ANDY_DEV_SECRET=<...> pytest /app/backend/tests/test_phase_a_auth.py -v`. Always purge db.rate_limit before rerunning if the previous run left buckets close to the limit (`db.rate_limit.delete_many({})`). The test file already stamps a unique XFF per test so cross-test bucket collisions are impossible; only same-suite reruns within the same 5-minute window on the SAME synthetic XFF would collide (they won't, uuid4-based).",
+  "rca_of_issue": "N/A — resolved. Prior blocker (peer-IP-per-pod rate-limit key) fixed by `_client_ip` helper honouring X-Forwarded-For."
+}
