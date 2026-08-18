@@ -263,6 +263,9 @@ export default function SettingsScreen() {
         </View>
 
         <View style={styles.section}>
+          <Button
+            testID="settings-logout-btn"
+            label="SIGN OUT"
             variant="danger"
             icon={<LogOut size={16} color="#fff" />}
             onPress={onLogout}

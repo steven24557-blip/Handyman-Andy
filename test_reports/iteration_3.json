@@ -1,0 +1,43 @@
+{
+  "summary": "iOS-build-blocker fix verification pass. All 10 backend pytest cases still green (100%). Frontend: /login renders SIGN IN WITH GOOGLE and DEV LOGIN CONTINUE; Apple button correctly hidden on web (Platform.OS !== 'ios'). Dev-login lands on dashboard and /settings renders the full settings tab — SIGN OUT, DELETE ACCOUNT, Privacy/Terms/Consent rows, QuickBooks+Square CONNECT toggles, subscription card, voice persona grid, pitch/pace sliders, and PREVIEW VOICE (JSX corruption at old L266 is fully repaired). app.json: `usesAppleSignIn` removed from ios, `expo-apple-authentication` removed from plugins, splash now points at ./assets/images/splash-image.png (exists), ITSAppUsesNonExemptEncryption=false. Backend server.py: load_dotenv(override=False) ✓, /_on_start retries Mongo 10x with backoff and never fails startup on index creation ✓, enforce_data_minimization_policy sleeps INTERVAL_S BEFORE first pass (backend logs after the latest reload show NO 'data-minimization sweep' line at boot — confirmed non-destructive at startup) ✓, STRIPE_API_KEY fallback = '' (no more sk_test_emergent hardcode) ✓. Regression /api/jobs, /api/subscription/status, /api/consent/list all reachable with dev token. Deprecated packages detected: none of the blocklist items (expo-av, expo-barcode-scanner, expo-background-fetch) are used — the app already uses expo-audio and expo-camera.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": [
+      {"component": "shadow* style props", "issue": "Console warning (non-blocking): '\"shadow*\" style props are deprecated. Use \"boxShadow\".' Emitted repeatedly on web preview from multiple components using shadowColor/shadowOffset/shadowOpacity/shadowRadius."},
+      {"component": "props.pointerEvents", "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents.' Emitted on /settings and /login. Likely from a third-party wrapper (FadeInView / lucide) — non-blocking."},
+      {"component": "Animated (useNativeDriver on web)", "issue": "Console warning: 'useNativeDriver is not supported because the native animated module is missing.' Expected on web preview only; irrelevant on native iOS/Android builds."}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auth_session.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [
+    "(Optional, low priority) Migrate deprecated 'shadow*' RN style props to 'boxShadow' across the app to silence the RN 0.76+ warnings.",
+    "(Optional, low priority) Replace legacy `props.pointerEvents` with `style.pointerEvents` in any custom/wrapped components.",
+    "(Optional) Consider removing `expo-apple-authentication` from package.json dependencies as well — currently still installed, only the app.json plugin+entitlement was pulled. It's harmless (isAvailableAsync() returns false without the entitlement) but adds dead weight to the bundle.",
+    "(Pre-existing, unchanged) server.py is ~1580 lines — split into routers before further growth. FastAPI @app.on_event('startup'/'shutdown') is deprecated — migrate to lifespan context manager.",
+    "(Pre-existing, unchanged) /api/auth/dev-login is always-on; gate behind ALLOW_DEV_LOGIN env before shipping to production."
+  ],
+  "critical_code_review_comments": [
+    "app.json Apple Sign-In root cause correctly excised: no `usesAppleSignIn` under ios, no `expo-apple-authentication` in plugins. Provisioning-profile mismatch cannot recur from config-time entitlement injection.",
+    "settings.tsx JSX is now well-formed — every Button has an opening tag; the previously reported stray `<Button props with no opening tag` around L266 is gone. Verified by successful bundle + full render of all 8 tracked testIDs.",
+    "server.py load_dotenv(ROOT_DIR/.env, override=False) is correct — deployment env vars now win over committed .env values.",
+    "_on_start retries Mongo ping up to 10 attempts (exponential-ish backoff capped at 15s) and wraps create_index in a try/except that only logs — startup can never crash on index creation.",
+    "enforce_data_minimization_policy first awaits INTERVAL_S before the destructive pass — confirmed via backend logs (no 'data-minimization sweep' log line after the most recent reload). audit_log.delete_many and jobs.update_many are safe at boot.",
+    "STRIPE_API_KEY fallback removed (line 40 = '' now). Missing key will surface as a Stripe 401 at first checkout call rather than silently pointing at a shared test key."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (10/10)", "frontend": "100% (settings + login + dev flow all pass)"},
+  "seed_data_creation": "tester@andyhandy.dev exists from prior iteration; 4 demo jobs already seeded.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL is EXPO_PUBLIC_BACKEND_URL=https://jobsite-assistant.preview.emergentagent.com (note: this env uses the PUBLIC-prefixed name, not EXPO_BACKEND_URL). Dev creds: {email:'tester@andyhandy.dev', name:'Test Tech'} via POST /api/auth/dev-login. Regression suite is at /app/backend/tests/test_auth_session.py (10 tests, ~1s). NOTE: /app/backend/tests/test_jp_handyman_backend.py remains stale from a prior product name; recommend deletion or full rewrite.",
+  "rca_of_issue": "N/A — this iteration verified fixes for the iOS provisioning-profile mismatch and deployment-health blockers. Root cause of the original iOS EAS failure was `usesAppleSignIn:true` + `expo-apple-authentication` plugin auto-injecting the com.apple.developer.applesignin entitlement, which the Emergent-provided provisioning profile does not authorize. Both have been removed from app.json; the expo-apple-authentication npm package remains installed but the login screen only shows the Apple button when `Platform.OS === 'ios' && AppleAuthentication.isAvailableAsync()` — verified in code and via web render (button absent). Build should now pass EAS provisioning validation."
+}

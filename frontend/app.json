@@ -10,9 +10,9 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "usesAppleSignIn": true,
       "bundleIdentifier": "com.andyhandy.app",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "Capture photos of repair tasks for AI diagnostics.",
         "NSPhotoLibraryUsageDescription": "Attach job-site photos to your work orders.",
         "NSMicrophoneUsageDescription": "Voice intake for hands-free job creation.",
@@ -46,7 +46,7 @@
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/splash-icon.png",
+          "image": "./assets/images/splash-image.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#09090b"
@@ -71,8 +71,7 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Find nearby hardware suppliers for your job."
         }
-      ],
-      "expo-apple-authentication"
+      ]
     ],
     "experiments": {
       "typedRoutes": true

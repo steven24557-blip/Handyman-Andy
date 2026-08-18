@@ -32,12 +32,12 @@ from emergentintegrations.llm.openai.text_to_speech import OpenAITextToSpeech
 # Environment
 # ============================================================
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
+load_dotenv(ROOT_DIR / ".env", override=False)
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 EMERGENT_LLM_KEY = os.environ["EMERGENT_LLM_KEY"]
-STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "sk_test_emergent")
+STRIPE_API_KEY = os.environ.get("STRIPE_API_KEY", "")
 APPLE_CLIENT_ID = os.environ.get("APPLE_CLIENT_ID", "com.andyhandy.app")
 
 stripe.api_key = STRIPE_API_KEY
@@ -1497,17 +1497,37 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _on_start():
-    await asyncio.gather(
-        db.users.create_index("email", unique=True),
-        db.users.create_index("user_id", unique=True),
-        db.user_sessions.create_index("session_token", unique=True),
-        db.user_sessions.create_index("user_id"),
-        db.user_sessions.create_index("expires_at", expireAfterSeconds=0),
-        db.jobs.create_index("user_id"),
-        db.jobs.create_index("job_id", unique=True),
-        db.audit_log.create_index("user_id"),
-        db.audit_log.create_index("timestamp"),
-    )
+    # Retry DB readiness before creating indexes. In a fresh Kubernetes
+    # environment Mongo may not be reachable at the exact millisecond FastAPI
+    # boots; without this the app process exits before health probes settle.
+    last_err: Optional[Exception] = None
+    for attempt in range(1, 11):
+        try:
+            await client.admin.command("ping")
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            logger.warning("Mongo not ready (attempt %s/10): %s", attempt, e)
+            await asyncio.sleep(min(2 * attempt, 15))
+    if last_err is not None:
+        logger.error("Proceeding without confirmed Mongo readiness: %s", last_err)
+
+    try:
+        await asyncio.gather(
+            db.users.create_index("email", unique=True),
+            db.users.create_index("user_id", unique=True),
+            db.user_sessions.create_index("session_token", unique=True),
+            db.user_sessions.create_index("user_id"),
+            db.user_sessions.create_index("expires_at", expireAfterSeconds=0),
+            db.jobs.create_index("user_id"),
+            db.jobs.create_index("job_id", unique=True),
+            db.audit_log.create_index("user_id"),
+            db.audit_log.create_index("timestamp"),
+        )
+    except Exception as e:
+        # Never fail startup on index creation — the app can still serve.
+        logger.warning("Index creation deferred: %s", e)
     asyncio.create_task(enforce_data_minimization_policy())
     logger.info("Handy-Andy backend ready (db=%s)", DB_NAME)
 
@@ -1515,13 +1535,19 @@ async def _on_start():
 async def enforce_data_minimization_policy():
     """Daily background data-minimization sweep (CCPA/CPRA + Illinois BIPA).
 
-    Every 24h: identify jobs marked 'closed' (the app's terminal "completed"
-    state) for more than 30 days, then PERMANENTLY DELETE any associated raw
-    audio assets (.mp3 / .wav / base64 blobs) from storage. Text transcripts
-    are retained as the minimal record of work performed. Audit-log entries
-    older than 7 years are purged. Expired sessions are swept defensively.
+    Every 24h (with a warm-up delay so nothing runs during a boot storm or a
+    cold Kubernetes rollout): identify jobs marked 'closed' (the app's
+    terminal "completed" state) for more than 30 days, then PERMANENTLY DELETE
+    any associated raw audio assets from storage. Text transcripts are
+    retained as the minimal record of work performed. Audit-log entries older
+    than 7 years are purged. Expired sessions are swept defensively.
+
+    The initial warm-up delay guarantees NO destructive operation runs during
+    application startup — the first pass only fires 24h after boot.
     """
     INTERVAL_S = 24 * 60 * 60
+    # Warm-up: never run the destructive pass at startup.
+    await asyncio.sleep(INTERVAL_S)
     while True:
         try:
             cutoff_30 = datetime.now(timezone.utc) - timedelta(days=30)
