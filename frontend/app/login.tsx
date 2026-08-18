@@ -60,7 +60,7 @@ By tapping the agreement checkbox below and proceeding, you acknowledge that you
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
-  const { user, signInDev, consumeSessionToken } = useAuth();
+  const { user, signInDev, consumeSessionId, installSession } = useAuth();
   const router = useRouter();
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
   const [agreed, setAgreed] = useState(false);
@@ -79,25 +79,58 @@ export default function LoginScreen() {
     if (user) router.replace('/(tabs)');
   }, [user, router]);
 
-  // Cold start handler for OAuth redirect (mobile)
+  // Cold-start / hot deep-link / web URL handler for OAuth redirect.
   useEffect(() => {
-    if (Platform.OS === 'web') return;
-    const sub = Linking.addEventListener('url', ({ url }) => handleRedirect(url));
+    if (Platform.OS === 'web') {
+      // On web, Emergent lands us back at redirect_url with `session_id` in
+      // either the hash fragment or the query string. Process it before any
+      // other auth check so we don't race against the /auth/me lookup.
+      if (typeof window !== 'undefined') {
+        const raw = window.location.hash + '&' + window.location.search;
+        handleRedirect(raw).then((consumed) => {
+          if (consumed) cleanWebUrl();
+        });
+      }
+      return;
+    }
+    const sub = Linking.addEventListener('url', ({ url }) => { handleRedirect(url); });
     Linking.getInitialURL().then((u) => u && handleRedirect(u));
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleRedirect = useCallback(async (url: string) => {
-    const m = url.match(/[#?]session_id=([^&]+)/);
-    if (!m) return;
+  const consumedRef = React.useRef<Set<string>>(new Set());
+  const handleRedirect = useCallback(async (url: string): Promise<boolean> => {
+    // Emergent returns session_id in the URL hash fragment. Match on the raw
+    // string — Linking.parse().queryParams cannot see hashes.
+    const m = url.match(/[#?&]session_id=([^&#]+)/);
+    if (!m) return false;
+    const sessionId = decodeURIComponent(m[1]);
+    // Guard: multiple sources (result.url + Linking listener + getInitialURL)
+    // can fire for the same deep-link on Android. Exchange each id exactly once.
+    if (consumedRef.current.has(sessionId)) return false;
+    consumedRef.current.add(sessionId);
     try {
-      await consumeSessionToken(decodeURIComponent(m[1]));
+      await consumeSessionId(sessionId);
       router.replace('/(tabs)');
+      return true;
     } catch (e: any) {
       Alert.alert('Sign-in failed', e?.message || 'Could not validate session');
+      return false;
     }
-  }, [consumeSessionToken, router]);
+  }, [consumeSessionId, router]);
+
+  const cleanWebUrl = () => {
+    if (typeof window === 'undefined') return;
+    try {
+      // Strip only session_id from hash and search; preserve everything else.
+      const stripFromHash = window.location.hash.replace(/([#&])session_id=[^&]*&?/g, '$1').replace(/[#&]$/, '');
+      const stripFromSearch = window.location.search.replace(/([?&])session_id=[^&]*&?/g, '$1').replace(/[?&]$/, '');
+      const newHash = stripFromHash === '#' ? '' : stripFromHash;
+      const newSearch = stripFromSearch === '?' ? '' : stripFromSearch;
+      window.history.replaceState(window.history.state, '', window.location.pathname + newSearch + newHash);
+    } catch {}
+  };
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { layoutMeasurement, contentOffset, contentSize } = e.nativeEvent;
@@ -111,7 +144,17 @@ export default function LoginScreen() {
     if (!agreed) return;
     setLoadingGoogle(true);
     try {
-      const redirectUrl = Linking.createURL('auth');
+      if (Platform.OS === 'web') {
+        // Web: MUST use a full-page navigation (not openAuthSessionAsync which
+        // opens a cross-origin popup we cannot read back). The user lands
+        // back at `redirect_url#session_id=...` and the mount handler above
+        // finishes the exchange.
+        const redirectUrl = window.location.origin + '/';
+        const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+        window.location.href = authUrl;
+        return; // page navigates away; no cleanup needed
+      }
+      const redirectUrl = Linking.createURL('');
       const authUrl = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
       // Google OAuth policy (RFC 8252): MUST use the system browser, not a WebView.
       // `openAuthSessionAsync` uses ASWebAuthenticationSession on iOS and Chrome
@@ -123,6 +166,8 @@ export default function LoginScreen() {
       if (result.type === 'success' && result.url) {
         await handleRedirect(result.url);
       }
+      // NOTE: on Android result.type may be 'dismiss' even on success; the
+      // Linking listener registered in the mount effect will pick it up.
     } catch (e: any) {
       Alert.alert('Sign-in error', e?.message || 'OAuth failed');
     } finally {
@@ -251,7 +296,10 @@ export default function LoginScreen() {
                     const fn = cred.fullName ? `${cred.fullName.givenName || ''} ${cred.fullName.familyName || ''}`.trim() : undefined;
                     const { api: apiClient } = await import('@/src/lib/api');
                     const r = await apiClient.appleLogin(cred.identityToken, fn, cred.email || undefined);
-                    await consumeSessionToken(r.session_token);
+                    // Backend already minted our session_token — install it
+                    // directly. Do NOT round-trip through /api/auth/session
+                    // (that expects a one-time session_id, not a token).
+                    await installSession({ session_token: r.session_token, user: r.user });
                     router.replace('/(tabs)');
                   }
                 } catch (e: any) {

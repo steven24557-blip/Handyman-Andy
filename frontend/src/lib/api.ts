@@ -46,7 +46,7 @@ function safeJson(t: string) { try { return JSON.parse(t); } catch { return { ra
 export const api = {
   // Auth
   devLogin: (email: string, name?: string) => request<{ session_token: string; user: any }>('/auth/dev-login', 'POST', { email, name }),
-  exchangeSession: (session_token: string) => request<{ session_token: string; user: any }>('/auth/session', 'POST', { session_token }),
+  exchangeSession: (session_id: string) => request<{ session_token: string; user: any }>('/auth/session', 'POST', { session_id }),
   appleLogin: (identity_token: string, full_name?: string, email?: string) =>
     request<{ session_token: string; user: any }>('/auth/apple', 'POST', { identity_token, full_name, email }),
   me: () => request<{ user: any; is_pro: boolean }>('/auth/me'),

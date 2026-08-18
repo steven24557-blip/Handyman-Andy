@@ -75,7 +75,7 @@ MOCK_SUPPLIERS = ["Home Depot", "Lowe's", "Ace Hardware", "Menards"]
 # Models
 # ============================================================
 class SessionRequest(BaseModel):
-    session_token: str
+    session_id: str
 
 
 class DevLoginRequest(BaseModel):
@@ -443,7 +443,13 @@ async def _ensure_user_billing_fields(user: dict):
 # ============================================================
 @api.post("/auth/session")
 async def create_session(payload: SessionRequest):
-    headers = {"X-Session-ID": payload.session_token}
+    """Exchange the one-time session_id from Emergent auth for our own bearer.
+
+    Per Emergent playbook: send `X-Session-ID: <session_id>` to
+    demobackend.emergentagent.com. The `session_token` returned in the body
+    is the value we mint & store — never re-verify a session_token.
+    """
+    headers = {"X-Session-ID": payload.session_id}
     async with httpx.AsyncClient(timeout=15) as h:
         r = await h.get(
             "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
@@ -455,7 +461,7 @@ async def create_session(payload: SessionRequest):
     email = data.get("email")
     name = data.get("name") or email
     picture = data.get("picture")
-    session_token = data.get("session_token") or payload.session_token
+    session_token = data.get("session_token") or f"emg_{uuid.uuid4().hex}"
     if not email:
         raise HTTPException(status_code=400, detail="No email in session data")
 
