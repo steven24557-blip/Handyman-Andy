@@ -46,6 +46,7 @@ import StatusBadge from '@/src/components/StatusBadge';
 import { api } from '@/src/lib/api';
 import { useSubscription } from '@/src/lib/subscription';
 import { useMascot } from '@/src/lib/mascot';
+import { FEATURES } from '@/src/lib/features';
 import { useAuth } from '@/src/lib/auth';
 import { colors, radius, space, text } from '@/src/lib/theme';
 import * as WebBrowser from 'expo-web-browser';
@@ -106,7 +107,7 @@ export default function JobDetails() {
         showTip({
           context: 'first_estimate_approved',
           title: 'CUSTOMER SIGNED',
-          body: "Estimate approved! Push the parts to checkout and get moving. When the job's done, sync it to your accounting integration in Settings.",
+          body: "Estimate approved! Push the parts to checkout and get moving. Snap an 'After' photo when the job's done and I'll wrap up the report.",
         });
       }
     } catch (e: any) {
@@ -623,8 +624,8 @@ export default function JobDetails() {
           />
         </View>
 
-        {/* Push to Accounting (closed jobs only) */}
-        {job.status === 'closed' && (
+        {/* Push to Accounting (closed jobs only) — hidden while QB/Square are pre-launch */}
+        {FEATURES.accountingIntegrations && job.status === 'closed' && (
           <View style={styles.section}>
             <Button
               testID="push-accounting-btn"

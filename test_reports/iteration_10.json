@@ -1,0 +1,34 @@
+{
+  "summary": "All 5 spec items PASS for the accounting-UI-hide-behind-feature-flag change.\n\n(1) SETTINGS TAB — GET /settings loaded with a fresh dev-login user. DOM check on the rendered page (mobile viewport 375x812) confirms: 'FINANCIAL INTEGRATIONS' text NOT present, 'QUICKBOOKS ONLINE' text NOT present, 'SQUARE' text NOT present. testID 'acct-quickbooks-btn' count = 0, 'acct-square-btn' count = 0. Sanity: 'SUBSCRIPTION' section still renders, 'persona-standard' testID still present. PASS.\n\n(2) JOB DETAILS on closed job — patched a seeded job to status='closed' and opened /job/<id>. DOM shows testID 'push-accounting-btn' count = 0 and 'PUSH TO ACCOUNTING' text not in DOM. Meanwhile the change-order flow (add-change-order-btn), all four status chips (status-set-open/in_progress/emergent/closed) and job-back-btn are all still present. PASS.\n\n(3) PAYWALL SHEET — source review of /app/frontend/src/components/PaywallSheet.tsx confirms exactly 4 BENEFITS: UNLIMITED AI VISION SCANS / UNLIMITED JOBS / CUSTOM MATERIAL MARKUPS / PARTS CHECKOUT + PDF REPORTS. No mention of QuickBooks, Square, or 'accounting'. Runtime bundle-scan of the served Metro bundle confirms 'PARTS CHECKOUT + PDF REPORTS' present, 'PARTS CHECKOUT + ACCOUNTING' absent, and no 'accounting integration' substring anywhere in the JS. PASS.\n\n(4) MASCOT COPY — /app/frontend/app/job/[id].tsx L106-112 first_estimate_approved body reads: \"Estimate approved! Push the parts to checkout and get moving. Snap an 'After' photo when the job's done and I'll wrap up the report.\" No 'accounting integration' text. grep of the entire frontend for 'accounting integration' returns zero hits. PASS.\n\n(5) BACKEND UNCHANGED — 7/7 new pytest tests pass against the preview host:\n  • dev-login → POST /api/accounting/connect {quickbooks, enabled:true} → 200 with accounting.quickbooks.enabled=true in response.\n  • GET /api/auth/me → user.accounting.quickbooks.enabled === true. (Note: /auth/me wraps user under {is_pro, user:{}}; test updated accordingly.)\n  • POST /api/accounting/connect {quickbooks, enabled:false} → 200 and /auth/me reflects cleared state.\n  • Square provider enable also returns 200.\n  • POST /api/jobs/{id}/accounting/push on a closed job returns 200 with subtotal (endpoint intact).\n  • Same endpoint on non-closed job returns 400 (validation intact).\n  Endpoints are 100% intact; only the UI is hidden. PASS.\n\nRegression — per agent-to-agent context note, full Phase A auth (21 tests) and Phase B billing (12 tests) suites were NOT re-run because the change is a UI-only visibility gate; no server logic, no auth flow, and no billing route was touched. Static grep confirms scope of changes is limited to features.ts + PaywallSheet copy + job/[id].tsx tip body + settings.tsx / job/[id].tsx conditional render. Frontend loads clean on mobile viewport with no red-screen errors.\n\nNo React Native / Expo deprecated-package findings for this change.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_accounting_hidden_backend.py",
+    "/app/test_reports/pytest/pytest_iter10_accounting.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "features.ts is the correct minimal-surface-area seam: single const object, single boolean, guardrail comment explains that flipping to true re-enables both UI branches with no other change needed. Good design.",
+    "settings.tsx L164 wraps the entire FINANCIAL INTEGRATIONS block with `FEATURES.accountingIntegrations ? (...) : null`. Because the conditional wraps the surrounding <View>, no orphan section header can leak. qbEnabled/sqEnabled + qbBusy/sqBusy state and setters are still declared at the top level — dead code while flag is off, but that's the intended trade-off for one-line re-enable.",
+    "job/[id].tsx L628 wraps `job.status === 'closed'` inside the FEATURES gate: `FEATURES.accountingIntegrations && job.status === 'closed'`. Short-circuit means the closed-job DOM path never mounts the button while the flag is false — verified in runtime DOM (0 count).",
+    "PaywallSheet.tsx BENEFITS array is exactly 4 items and all sub-copy is clean. Icon choice for the PDF-reports line (CheckCircle2) is a reasonable stand-in for the removed accounting icon.",
+    "mascot copy in job/[id].tsx L106-112 correctly repositions the tip around the physical 'snap an After photo' action, which is still the next real user step for a signed job. Good product framing."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_accounting_hidden_backend.py (new — 7 tests)"
+  ],
+  "success_rate": {
+    "backend": "7/7 (100%) accounting-endpoint tests pass",
+    "frontend": "5/5 (100%) spec items pass"
+  },
+  "seed_data_creation": "Two throwaway dev-login users (acct_hidden_<ts>@andyhandy.test for pytest, iter10_ui@andyhandy.test for playwright) each with 4 auto-seeded jobs. One job PATCHed to status='closed' to exercise the push endpoint + closed-job DOM path.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "If the accounting UI needs to be re-enabled: flip /app/frontend/src/lib/features.ts:accountingIntegrations to true and expect (a) settings tab to grow a 'FINANCIAL INTEGRATIONS' section with acct-quickbooks-btn + acct-square-btn, (b) closed jobs to render push-accounting-btn, and (c) mascot tip on first estimate approved may want re-copying if you want to nudge users toward pushing to accounting. Do NOT touch backend accounting endpoints — they're already live and covered by /app/backend/tests/test_accounting_hidden_backend.py (regression-safe). PaywallSheet benefits array is now decoupled from the flag; if you re-enable accounting, decide whether to re-swap the 4th benefit line to 'PARTS CHECKOUT + ACCOUNTING' — the swap is a manual copy edit, not driven by the flag.",
+  "rca_of_issue": "N/A — this iteration is a scoped feature-hide, not a bug fix."
+}

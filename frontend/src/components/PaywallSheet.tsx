@@ -10,7 +10,7 @@ const BENEFITS = [
   { Icon: Sparkles, label: 'UNLIMITED AI VISION SCANS', sub: 'Diagnostics, safety, job analysis — no caps.' },
   { Icon: Wrench, label: 'UNLIMITED JOBS', sub: 'Run as many active job sites as you can handle.' },
   { Icon: Hammer, label: 'CUSTOM MATERIAL MARKUPS', sub: 'Set 15/25/35% or your own. Unwatermarked estimates.' },
-  { Icon: CheckCircle2, label: 'PARTS CHECKOUT + ACCOUNTING', sub: 'Push closed jobs to QuickBooks & Square.' },
+  { Icon: CheckCircle2, label: 'PARTS CHECKOUT + PDF REPORTS', sub: 'One-tap Stripe checkout for BOMs and full estimate PDFs.' },
 ];
 
 export default function PaywallSheet() {

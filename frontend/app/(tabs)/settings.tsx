@@ -11,6 +11,7 @@ import { api } from '@/src/lib/api';
 import { useAuth } from '@/src/lib/auth';
 import { useSubscription } from '@/src/lib/subscription';
 import { useMascot } from '@/src/lib/mascot';
+import { FEATURES } from '@/src/lib/features';
 import { colors, radius, space, text } from '@/src/lib/theme';
 import { storage } from '@/src/utils/storage';
 import { useRouter } from 'expo-router';
@@ -160,40 +161,42 @@ export default function SettingsScreen() {
 
         <MascotToggleSection />
 
-        <View style={styles.section}>
-          <View style={styles.sectionHead}>
-            <Briefcase size={16} color={colors.primary} />
-            <Text style={styles.sectionTitle}>FINANCIAL INTEGRATIONS</Text>
-          </View>
-          {[
-            { key: 'quickbooks', name: 'QUICKBOOKS ONLINE', enabled: qbEnabled, busy: qbBusy, setBusy: setQbBusy },
-            { key: 'square', name: 'SQUARE', enabled: sqEnabled, busy: sqBusy, setBusy: setSqBusy },
-          ].map((p) => (
-            <View key={p.key} style={[styles.personaCard, p.enabled && { borderColor: colors.success }]}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.personaName}>{p.name}</Text>
-                  <Text style={styles.personaDesc}>{p.enabled ? 'Connected · syncing closed jobs' : 'Not connected'}</Text>
-                </View>
-                <Button
-                  testID={`acct-${p.key}-btn`}
-                  label={p.busy ? '…' : (p.enabled ? 'DISCONNECT' : 'CONNECT')}
-                  variant={p.enabled ? 'outline' : 'primary'}
-                  loading={p.busy}
-                  onPress={async () => {
-                    p.setBusy(true);
-                    try {
-                      await api.accountingConnect(p.key as any, !p.enabled);
-                      await refreshAuth();
-                    } catch (e: any) {
-                      Alert.alert('Failed', e?.message || '');
-                    } finally { p.setBusy(false); }
-                  }}
-                />
-              </View>
+        {FEATURES.accountingIntegrations ? (
+          <View style={styles.section}>
+            <View style={styles.sectionHead}>
+              <Briefcase size={16} color={colors.primary} />
+              <Text style={styles.sectionTitle}>FINANCIAL INTEGRATIONS</Text>
             </View>
-          ))}
-        </View>
+            {[
+              { key: 'quickbooks', name: 'QUICKBOOKS ONLINE', enabled: qbEnabled, busy: qbBusy, setBusy: setQbBusy },
+              { key: 'square', name: 'SQUARE', enabled: sqEnabled, busy: sqBusy, setBusy: setSqBusy },
+            ].map((p) => (
+              <View key={p.key} style={[styles.personaCard, p.enabled && { borderColor: colors.success }]}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.personaName}>{p.name}</Text>
+                    <Text style={styles.personaDesc}>{p.enabled ? 'Connected · syncing closed jobs' : 'Not connected'}</Text>
+                  </View>
+                  <Button
+                    testID={`acct-${p.key}-btn`}
+                    label={p.busy ? '…' : (p.enabled ? 'DISCONNECT' : 'CONNECT')}
+                    variant={p.enabled ? 'outline' : 'primary'}
+                    loading={p.busy}
+                    onPress={async () => {
+                      p.setBusy(true);
+                      try {
+                        await api.accountingConnect(p.key as any, !p.enabled);
+                        await refreshAuth();
+                      } catch (e: any) {
+                        Alert.alert('Failed', e?.message || '');
+                      } finally { p.setBusy(false); }
+                    }}
+                  />
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : null}
 
 
         <View style={styles.section}>
