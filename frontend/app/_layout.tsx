@@ -9,6 +9,7 @@ import { View } from 'react-native';
 import { useIconFonts } from '@/src/hooks/use-icon-fonts';
 import { AuthProvider } from '@/src/lib/auth';
 import { SubscriptionProvider } from '@/src/lib/subscription';
+import { MascotProvider } from '@/src/lib/mascot';
 import PaywallSheet from '@/src/components/PaywallSheet';
 import { colors } from '@/src/lib/theme';
 
@@ -36,17 +37,19 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <AuthProvider>
           <SubscriptionProvider>
-            <StatusBar style="light" />
-            <View style={{ flex: 1, backgroundColor: colors.background }}>
-              <Stack
-                screenOptions={{
-                  headerShown: false,
-                  contentStyle: { backgroundColor: colors.background },
-                  animation: 'fade',
-                }}
-              />
-              <PaywallSheet />
-            </View>
+            <MascotProvider>
+              <StatusBar style="light" />
+              <View style={{ flex: 1, backgroundColor: colors.background }}>
+                <Stack
+                  screenOptions={{
+                    headerShown: false,
+                    contentStyle: { backgroundColor: colors.background },
+                    animation: 'fade',
+                  }}
+                />
+                <PaywallSheet />
+              </View>
+            </MascotProvider>
           </SubscriptionProvider>
         </AuthProvider>
       </SafeAreaProvider>

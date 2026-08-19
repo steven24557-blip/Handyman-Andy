@@ -2,13 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
-import { Volume2, Play, Mic2, Gauge, LogOut, Trash2, Briefcase, CreditCard, ShieldCheck, ChevronRight } from 'lucide-react-native';
+import { Volume2, Play, Mic2, Gauge, LogOut, Trash2, Briefcase, CreditCard, ShieldCheck, ChevronRight, Sparkles } from 'lucide-react-native';
 import { createAudioPlayer } from 'expo-audio';
 
 import Button from '@/src/components/Button';
+import HandyAndy from '@/src/components/HandyAndy';
 import { api } from '@/src/lib/api';
 import { useAuth } from '@/src/lib/auth';
 import { useSubscription } from '@/src/lib/subscription';
+import { useMascot } from '@/src/lib/mascot';
 import { colors, radius, space, text } from '@/src/lib/theme';
 import { storage } from '@/src/utils/storage';
 import { useRouter } from 'expo-router';
@@ -100,33 +102,63 @@ export default function SettingsScreen() {
           </View>
           <View style={styles.personaCard}>
             <Text style={styles.personaName}>
-              {sub?.is_pro ? (sub?.status === 'trialing' ? 'TRIALING · PRO ACCESS' : 'ACTIVE · PRO') : 'FREE TIER'}
+              {sub?.is_pro ? (sub?.in_trial ? `TRIALING · ${sub?.trial_days_remaining} DAY${sub?.trial_days_remaining === 1 ? '' : 'S'} LEFT` : 'ACTIVE · PRO') : 'FREE TIER'}
             </Text>
             <Text style={styles.personaDesc}>
               {sub?.is_pro
-                ? `Unlimited AI scans · jobs · markups`
-                : `${sub?.ai_scan_count_this_month || 0}/${sub?.ai_limit_free || 2} AI scans · max ${sub?.job_limit_free || 3} jobs`}
+                ? `Unlimited AI scans · jobs · markups${sub?.cancel_at_period_end ? ' · Cancels at period end' : ''}`
+                : `${sub?.ai_scan_count_this_month || 0}/${sub?.ai_limit_free || 6} AI scans · max ${sub?.job_limit_free || 3} jobs`}
             </Text>
           </View>
-          {!sub?.is_pro && (
-            <Button label="UPGRADE TO PRO — $39/MO" onPress={() => showPaywall('Unlock everything Andy can do.')} fullWidth />
-          )}
-          {sub?.is_pro && sub?.status !== 'canceled' && (
+          {!sub?.is_pro || sub?.in_trial ? (
             <Button
-              testID="cancel-sub-btn"
-              label={subBusy ? 'CANCELING…' : 'CANCEL SUBSCRIPTION'}
+              testID="settings-see-plans-btn"
+              label={sub?.in_trial ? 'CHOOSE A PLAN' : `UPGRADE — FROM $${(sub?.monthly_price_usd || 7.99).toFixed(2)}/MO`}
+              onPress={() => router.push('/pricing')}
+              fullWidth
+            />
+          ) : null}
+          {sub?.is_pro && !sub?.in_trial ? (
+            <Button
+              testID="settings-manage-sub-btn"
+              label={subBusy ? 'OPENING PORTAL…' : 'MANAGE SUBSCRIPTION'}
               variant="outline"
               loading={subBusy}
               onPress={async () => {
                 setSubBusy(true);
-                try { await api.subCancel(); await refreshSub(); }
-                catch (e: any) { Alert.alert('Cancel failed', e?.message || ''); }
-                finally { setSubBusy(false); }
+                try {
+                  const origin =
+                    typeof window !== 'undefined' && window.location
+                      ? window.location.origin
+                      : (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://jobsite-assistant.emergent.host');
+                  const r = await api.subscriptionPortal(origin);
+                  if (typeof window !== 'undefined') window.location.href = r.portal_url;
+                  else {
+                    const Linking = require('react-native').Linking;
+                    await Linking.openURL(r.portal_url);
+                  }
+                } catch (e: any) {
+                  Alert.alert('Portal error', e?.message || '');
+                } finally { setSubBusy(false); }
               }}
               fullWidth
             />
-          )}
+          ) : null}
+          {sub?.is_pro && !sub?.in_trial && sub?.cancel_at_period_end ? (
+            <Button
+              testID="settings-reactivate-btn"
+              label="REACTIVATE"
+              variant="primary"
+              onPress={async () => {
+                try { await api.subscriptionReactivate(); await refreshSub(); }
+                catch (e: any) { Alert.alert('Reactivation failed', e?.message || ''); }
+              }}
+              fullWidth
+            />
+          ) : null}
         </View>
+
+        <MascotToggleSection />
 
         <View style={styles.section}>
           <View style={styles.sectionHead}>
@@ -305,6 +337,36 @@ export default function SettingsScreen() {
         <Text style={styles.footer}>HANDY-ANDY · v2.0 · BUILD 26.02</Text>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// -----------------------------------------------------------------
+// Mascot toggle — persistent server-side preference. Text-only Andy.
+// -----------------------------------------------------------------
+function MascotToggleSection() {
+  const { enabled, setEnabled } = useMascot();
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHead}>
+        <Sparkles size={16} color={colors.primary} />
+        <Text style={styles.sectionTitle}>HANDY-ANDY HELPER</Text>
+      </View>
+      <View style={[styles.personaCard, { flexDirection: 'row', alignItems: 'center', gap: space.md }]}>
+        <HandyAndy size={40} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.personaName}>{enabled ? 'ON — SHOWING TIPS' : 'OFF — HIDDEN'}</Text>
+          <Text style={styles.personaDesc}>
+            Text-only tips only. Voice guidance still uses your selected persona.
+          </Text>
+        </View>
+        <Button
+          testID="mascot-toggle-btn"
+          label={enabled ? 'HIDE' : 'SHOW'}
+          variant={enabled ? 'outline' : 'primary'}
+          onPress={() => setEnabled(!enabled)}
+        />
+      </View>
+    </View>
   );
 }
 

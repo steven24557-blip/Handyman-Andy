@@ -1,0 +1,42 @@
+{
+  "summary": "Phase B (Stripe subscription + webhook + text-only Handy-Andy mascot) end-to-end verification PASSES on both backend and frontend. New pytest suite `/app/backend/tests/test_phase_b_billing.py` — 12/12 green covering plan catalog contract ($7.99 monthly / $59.99 annual / SAVE 37% / trial_days=14 / free_tier.ai_scans_per_month=6), authed subscription/status (fresh dev-login → status=trialing, is_pro=true, in_trial=true, trial_days_remaining=14, current_tier=pro, monthly_price_usd=7.99, annual_price_usd=59.99), checkout idempotency (Stripe now holds exactly 2 Handy-Andy Pro products & 1 active price per lookup_key after repeated calls), checkout 400/401 guards, portal 400 without customer, reactivate 400 without sub, webhook 400-on-missing/bad-signature, HMAC-signed active/past_due/deleted transitions flipping DB rows correctly, and duplicate-event idempotency (second delivery of same evt_id returns {received:true,duplicate:true} and stripe_events count stays at 1). Mascot GET defaults {show_mascot:true, dismissed_contexts:[]}; SET show_mascot=false persists; dismiss `onboarding` is $addToSet-idempotent. Phase A regression (21/21) also PASSES. Frontend Playwright run confirms dashboard trial banner (`14 DAYS LEFT · PRO TRIAL` + `SEE PLANS`) routes to /pricing on tap, pricing renders both cards + SAVE 37% + WHAT YOU GET list, monthly-card selection updates CTA label, BACK returns to previous route, mascot FAB (yellow hard-hat) renders bottom-right without covering the tab bar, onboarding tip `HEY, I'M ANDY` appears within 2s and X closes it, `Don't show again` permanently dismisses (`server show `{'show_mascot': True, 'dismissed_contexts': ['onboarding']}` post-tap, reload does NOT re-show the bubble). Settings tab shows HANDY-ANDY HELPER section with SHOW/HIDE toggle (persists + hides FAB immediately) and SUBSCRIPTION `TRIALING · 14 DAYS LEFT` + `CHOOSE A PLAN` button. Only cosmetic delta: pricing CTA reads `START MONTHLY PLAN` / `START ANNUAL PLAN` where the spec called for `UPGRADE TO MONTHLY` — copy nit, not a bug. No React Native / Expo deprecated-package findings. NOTE: backend/.env's `APP_BASE_URL=https://jobsite-assistant.emergent.host` returns Cloudflare 520 from this cluster (only `.preview.emergentagent.com` works) — test file pins the preview URL to work around.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/pricing", "issues": ["Upgrade CTA label reads 'START MONTHLY PLAN' / 'START ANNUAL PLAN'. Product spec asked for 'UPGRADE TO MONTHLY' / 'UPGRADE TO ANNUAL'. Cosmetic copy nit only — flow works."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase_b_billing.py",
+    "/app/backend/tests/test_phase_a_auth.py",
+    "/app/test_reports/pytest/pytest_iter7_phaseb.xml",
+    "/app/test_reports/pytest/pytest_iter7_phasea.xml"
+  ],
+  "action_items": [
+    "Optional copy tweak: change pricing.tsx UPGRADE-button label from 'START <PLAN> PLAN' to 'UPGRADE TO <PLAN>' to match the phase-B product spec (functional flow already passes)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:1514-1567 — stripe webhook fails closed on missing secret (503), rejects on bad signature (400), and guards duplicate events by inserting `stripe_events{event_id}` first (unique-key insertion race yields `{received:true,duplicate:true}` without re-running the handler). Verified end-to-end.",
+    "server.py:1224-1256 — `_get_or_create_price` is correctly idempotent via Stripe `lookup_keys`: after 2 checkouts per plan, Stripe reports exactly 1 active Price per lookup_key and 2 Handy-Andy Pro products total.",
+    "server.py:1197-1221 — Plan catalog is a pure constant; savings_pct auto-derived (`PRO_ANNUAL_SAVINGS_PCT = int(round((1-(59.99/(7.99*12)))*100)) == 37`). No hard-coded value drift risk.",
+    "server.py:1462-1493 — `_apply_subscription_state` resolves user via metadata.user_id first, falls back to stripe_customer_id; preserves trial access when local trial days remain even if Stripe reports non-Pro status. Good defensive behavior.",
+    "server.py:1164-1191 — mascot endpoints use `$addToSet` for idempotent dismiss; `show_mascot` boolean coerced. No _id leakage (get_current_user projects out _id).",
+    "server.py: STRIPE_API_KEY env from shell (sk_test_emergent stub) collides with backend/.env (real key) when `load_dotenv(override=False)` — the running backend already loads with override=False; verified it does pick the real key because supervisor injects .env directly. Test suite must use override=True (done).",
+    "frontend/src/lib/api.ts:3 — good: BASE = process.env.EXPO_PUBLIC_BACKEND_URL, no localhost fallback. Storage helper uses AsyncStorage-web which JSON.stringify's values (matters only for programmatic session-seeding in tests)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase_b_billing.py (new — 12 tests covering plans/status/checkout-idempotent/portal/reactivate/webhook signed+dup+past_due+deleted/mascot)"
+  ],
+  "success_rate": {"backend": "100% (12/12 Phase B + 21/21 Phase A regression = 33/33)", "frontend": "100% of covered flows (pricing render+select+back, dashboard trial banner, mascot FAB+tip+X-close+dismiss-forever persist, settings mascot toggle, settings subscription card)"},
+  "seed_data_creation": "~7 TEST_-prefixed users + ~3 TEST_ stripe_events created during the run; teardown_module + explicit mongosh purge left the DB clean.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Public URL for testing: https://jobsite-assistant.preview.emergentagent.com (backend/.env's APP_BASE_URL emergent.host is currently CF-520 from this cluster — do NOT use for testing). Regression cmd: `EXPO_PUBLIC_BACKEND_URL=https://jobsite-assistant.preview.emergentagent.com pytest /app/backend/tests/test_phase_a_auth.py /app/backend/tests/test_phase_b_billing.py -v`. Purge `db.rate_limit` and `db.stripe_events{event_id:/^evt_TEST_/}` before rerunning. For frontend, seed a session via `POST /api/auth/dev-login` then `page.evaluate(\"localStorage.setItem('andy_session_token', JSON.stringify(TOKEN))\")` — the web AsyncStorage shim JSON-encodes values. Do not exceed 5 dev-logins/hr from the same egress IP (rate-limited).",
+  "rca_of_issue": "N/A — no functional bugs found. Only a copy nit on the upgrade CTA."
+}

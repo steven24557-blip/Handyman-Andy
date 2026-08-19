@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
-import { Alert, Linking, Modal, Pressable, StyleSheet, Text, View, ScrollView } from 'react-native';
-import * as WebBrowser from 'expo-web-browser';
+import { Modal, Pressable, StyleSheet, Text, View, ScrollView } from 'react-native';
+import { useRouter } from 'expo-router';
 import { X, CheckCircle2, Hammer, Wrench, Sparkles, Lock } from 'lucide-react-native';
 import Button from './Button';
-import { api } from '@/src/lib/api';
 import { useSubscription } from '@/src/lib/subscription';
 import { colors, radius, space } from '@/src/lib/theme';
 
@@ -15,36 +14,18 @@ const BENEFITS = [
 ];
 
 export default function PaywallSheet() {
-  const { paywallVisible, paywallReason, hidePaywall, refresh, sub } = useSubscription();
-  const [loading, setLoading] = useState(false);
+  const router = useRouter();
+  const { paywallVisible, paywallReason, hidePaywall, sub } = useSubscription();
+  const [loading] = useState(false);
 
-  const start = async () => {
-    setLoading(true);
-    try {
-      const origin = process.env.EXPO_PUBLIC_BACKEND_URL || '';
-      const res = await api.subCheckout(origin);
-      // Stripe Checkout: route through the system browser (ASWebAuthenticationSession /
-      // Chrome Custom Tabs). No WebView — complies with Google + Apple in-app browser
-      // policies and Stripe's PCI requirements.
-      const result = await WebBrowser.openAuthSessionAsync(
-        res.checkout_url,
-        `${origin}/billing/success`,
-        { preferEphemeralSession: true, showInRecents: false },
-      );
-      if (result.type === 'success' && result.url) {
-        const m = result.url.match(/session_id=([^&]+)/);
-        if (m) {
-          await api.subConfirm(decodeURIComponent(m[1]));
-        }
-      }
-      await refresh();
-      hidePaywall();
-    } catch (e: any) {
-      Alert.alert('Checkout failed', e?.message || '');
-    } finally {
-      setLoading(false);
-    }
+  const seePlans = () => {
+    hidePaywall();
+    router.push('/pricing');
   };
+
+  const monthly = sub?.monthly_price_usd ?? 7.99;
+  const annual = sub?.annual_price_usd ?? 59.99;
+  const trialLeft = sub?.trial_days_remaining ?? 14;
 
   return (
     <Modal animationType="slide" transparent visible={paywallVisible} onRequestClose={hidePaywall}>
@@ -63,8 +44,12 @@ export default function PaywallSheet() {
             {paywallReason && <Text style={styles.reason}>{paywallReason}</Text>}
 
             <View style={styles.priceCard}>
-              <Text style={styles.priceMain}>$39<Text style={styles.priceUnit}>/mo</Text></Text>
-              <Text style={styles.priceTag}>Start your 7-Day Free Trial. $39/mo thereafter. Cancel anytime.</Text>
+              <Text style={styles.priceMain}>${monthly.toFixed(2)}<Text style={styles.priceUnit}>/mo</Text></Text>
+              <Text style={styles.priceTag}>
+                {sub?.in_trial
+                  ? `You have ${trialLeft} day${trialLeft === 1 ? '' : 's'} left on your free trial. Or save ~37% with annual at $${annual.toFixed(2)}/yr.`
+                  : `14-day free trial included. No card required. Save ~37% with annual at $${annual.toFixed(2)}/yr.`}
+              </Text>
             </View>
 
             <View style={{ gap: space.md, marginTop: space.lg }}>
@@ -91,9 +76,9 @@ export default function PaywallSheet() {
 
             <View style={{ height: space.lg }} />
             <Button
-              testID="paywall-start-btn"
-              label={loading ? 'LAUNCHING CHECKOUT…' : 'START FREE TRIAL'}
-              onPress={start}
+              testID="paywall-see-plans-btn"
+              label={loading ? 'OPENING…' : 'SEE PLANS'}
+              onPress={seePlans}
               loading={loading}
               fullWidth
             />

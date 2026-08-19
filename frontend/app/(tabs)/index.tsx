@@ -10,10 +10,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { Plus, LogOut, Mic } from 'lucide-react-native';
+import { Plus, LogOut, Mic, Sparkles } from 'lucide-react-native';
 import FadeInView from '@/src/components/FadeInView';
 import { createAudioPlayer } from 'expo-audio';
 import { useSubscription } from '@/src/lib/subscription';
+import { useMascot } from '@/src/lib/mascot';
 
 import JobCard from '@/src/components/JobCard';
 import { api } from '@/src/lib/api';
@@ -31,7 +32,8 @@ const FILTERS: { key: string; label: string }[] = [
 
 export default function Dashboard() {
   const { user, signOut } = useAuth();
-  const { showPaywall, refresh: refreshSub } = useSubscription();
+  const { sub, showPaywall, refresh: refreshSub } = useSubscription();
+  const { showTip } = useMascot();
   const router = useRouter();
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,6 +53,20 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => { fetchJobs(); }, [fetchJobs]);
+
+  // First-run Andy tip. Fires exactly once per user (server-side dismissal
+  // key is "onboarding" so subsequent sessions stay quiet).
+  useEffect(() => {
+    if (!user) return;
+    const t = setTimeout(() => {
+      showTip({
+        context: 'onboarding',
+        title: "HEY, I'M ANDY",
+        body: 'Tap the yellow + to start a job, or head to the Diagnostic tab to snap a photo of the problem. I will chip in when you need me.',
+      });
+    }, 900);
+    return () => clearTimeout(t);
+  }, [user, showTip]);
 
   // Voice greeting (one-time per device, persona-aware)
   useEffect(() => {
@@ -174,6 +190,39 @@ export default function Dashboard() {
         })}
       </View>
 
+      {sub?.in_trial ? (
+        <Pressable
+          testID="dashboard-trial-banner"
+          onPress={() => router.push('/pricing')}
+          style={styles.trialBanner}
+          accessibilityRole="button"
+          accessibilityLabel={`${sub.trial_days_remaining} days left in your Pro trial. Tap to see plans.`}
+        >
+          <Sparkles size={16} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.trialTitle}>
+              {sub.trial_days_remaining} DAY{sub.trial_days_remaining === 1 ? '' : 'S'} LEFT · PRO TRIAL
+            </Text>
+            <Text style={styles.trialSub}>Tap to view $7.99/mo or $59.99/yr plans</Text>
+          </View>
+          <Text style={styles.trialCta}>SEE PLANS</Text>
+        </Pressable>
+      ) : sub && !sub.is_pro ? (
+        <Pressable
+          testID="dashboard-upgrade-banner"
+          onPress={() => router.push('/pricing')}
+          style={[styles.trialBanner, { backgroundColor: colors.surface, borderColor: colors.borderStrong }]}
+          accessibilityRole="button"
+        >
+          <Sparkles size={16} color={colors.primary} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.trialTitle}>FREE TIER · {sub.ai_scan_count_this_month}/{sub.ai_limit_free} SCANS</Text>
+            <Text style={styles.trialSub}>Upgrade to Pro for unlimited scans + full history</Text>
+          </View>
+          <Text style={styles.trialCta}>UPGRADE</Text>
+        </Pressable>
+      ) : null}
+
       <FlatList
         testID="job-list"
         data={filtered}
@@ -251,6 +300,16 @@ const styles = StyleSheet.create({
   },
   chipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   chipText: { color: colors.textSecondary, fontSize: 11, fontWeight: '800', letterSpacing: 0.7 },
+  trialBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: space.sm,
+    marginHorizontal: space.lg, marginBottom: space.md,
+    paddingHorizontal: space.md, paddingVertical: 12,
+    borderRadius: radius.sm, backgroundColor: colors.primaryMuted,
+    borderWidth: 1, borderColor: colors.primary,
+  },
+  trialTitle: { color: colors.textPrimary, fontSize: 12, fontWeight: '900', letterSpacing: 1 },
+  trialSub: { color: colors.textSecondary, fontSize: 11, marginTop: 2 },
+  trialCta: { color: colors.primary, fontSize: 11, fontWeight: '900', letterSpacing: 1 },
   chipTextActive: { color: '#0a0a0a' },
   listContent: { paddingHorizontal: space.lg, paddingTop: space.xs, paddingBottom: space.xxl },
   empty: { alignItems: 'center', paddingVertical: space.xxl },

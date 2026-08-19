@@ -28,6 +28,7 @@ import {
 import FadeInView from '@/src/components/FadeInView';
 import Button from '@/src/components/Button';
 import { api } from '@/src/lib/api';
+import { useMascot } from '@/src/lib/mascot';
 import { colors, radius, space, text } from '@/src/lib/theme';
 
 type DiagnosticResult = {
@@ -125,19 +126,36 @@ export default function DiagnosticScreen() {
     setResult(null);
   };
 
+  const { showTip } = useMascot();
+
   const analyze = async () => {
     if (!capturedB64) return;
     setAnalyzing(true);
     try {
       const res = await api.diagnostic(capturedB64);
       setResult(res);
+      // Contextual mascot: low-confidence / vague diagnosis → offer a hint.
+      // We treat "no root_cause" or a very short response as low-confidence.
+      const rootCause = (res?.root_cause || '').trim();
+      const looksLowConfidence = !rootCause || rootCause.length < 12 || /unsure|unclear|possible/i.test(rootCause);
+      if (looksLowConfidence) {
+        showTip({
+          context: 'diag_low_confidence',
+          title: 'HMM…',
+          body: "That photo was a bit dim. Try shooting closer, in better light, and include a reference (finger or ruler). I'll take another look.",
+        });
+      }
     } catch (e: any) {
       if (e?.status === 402) {
-        const { useSubscription } = await import('@/src/lib/subscription');
-        // dynamic showPaywall handled by parent via Alert fallback for now
         Alert.alert('Out of free scans', e?.message || 'Upgrade to Pro for unlimited.');
       } else {
         Alert.alert('AI failed', e?.message || 'Try again');
+        // Failed scan → contextual mascot tip.
+        showTip({
+          context: 'diag_failed',
+          title: 'GLITCH IN THE MATRIX',
+          body: "That one didn't go through. Check your connection or try a smaller, clearer photo — I've got you.",
+        });
       }
     } finally {
       setAnalyzing(false);

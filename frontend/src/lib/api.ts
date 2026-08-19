@@ -63,6 +63,22 @@ export const api = {
   resetPassword: (token: string, new_password: string) =>
     request<{ ok: boolean }>('/auth/reset-password', 'POST', { token, new_password }),
 
+  // Subscription
+  subscriptionStatus: () => request<any>('/subscription/status'),
+  subscriptionPlans: () => request<{ plans: any[]; trial_days: number; free_tier: { ai_scans_per_month: number; job_limit: number } }>('/subscription/plans'),
+  subscriptionCheckout: (plan_id: 'monthly' | 'annual', return_origin: string) =>
+    request<{ checkout_url: string; session_id: string }>('/subscription/checkout', 'POST', { job_id: plan_id, return_origin }),
+  subscriptionPortal: (return_origin: string) =>
+    request<{ portal_url: string }>('/subscription/portal', 'POST', { return_origin }),
+  subscriptionCancel: () => request<{ status: string; cancel_at_period_end?: boolean }>('/subscription/cancel', 'POST'),
+  subscriptionReactivate: () => request<{ status: string; cancel_at_period_end: boolean }>('/subscription/reactivate', 'POST'),
+  subscriptionConfirm: (session_id: string) => request<{ status: string }>(`/subscription/confirm?session_id=${encodeURIComponent(session_id)}`, 'POST'),
+
+  // Mascot
+  mascotSettings: () => request<{ show_mascot: boolean; dismissed_contexts: string[] }>('/mascot/settings'),
+  setMascotSettings: (show_mascot: boolean) => request<{ show_mascot: boolean }>('/mascot/settings', 'POST', { show_mascot }),
+  dismissMascot: (context: string) => request<{ ok: boolean }>('/mascot/dismiss', 'POST', { context }),
+
   me: () => request<{ user: any; is_pro: boolean }>('/auth/me'),
   logout: () => request('/auth/logout', 'POST'),
   deleteAccount: () => request('/auth/account', 'DELETE'),

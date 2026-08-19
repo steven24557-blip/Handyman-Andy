@@ -67,10 +67,14 @@ api = APIRouter(prefix="/api")
 # ============================================================
 # Constants
 # ============================================================
-TRIAL_DAYS = 7
-PRO_PRICE_USD = 39.00
-FREE_TIER_AI_LIMIT = 2
+TRIAL_DAYS = 14
+PRO_MONTHLY_USD = 7.99
+PRO_ANNUAL_USD = 59.99
+PRO_ANNUAL_MONTHLY_EQUIV = round(PRO_ANNUAL_USD / 12, 2)
+PRO_ANNUAL_SAVINGS_PCT = int(round((1 - (PRO_ANNUAL_USD / (PRO_MONTHLY_USD * 12))) * 100))
+FREE_TIER_AI_LIMIT = int(os.environ.get("FREE_TIER_AI_SCANS_PER_MONTH", "6"))
 FREE_TIER_JOB_LIMIT = 3  # max open + in_progress
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 PERSONA_VOICES = {
     "standard": ("onyx", "Speak in a calm, professional handyman tone."),
     "folksy": ("fable", "Speak in a warm, folksy small-town tone. Use friendly idioms."),
@@ -277,6 +281,14 @@ class CheckoutBody(BaseModel):
 class AccountingConnect(BaseModel):
     provider: str  # 'quickbooks' | 'square'
     enabled: bool
+
+
+class MascotSettingsBody(BaseModel):
+    show_mascot: bool
+
+
+class MascotDismissBody(BaseModel):
+    context: str  # e.g. "onboarding", "failed_scan", "help"
 
 
 # ============================================================
@@ -1149,34 +1161,174 @@ async def delete_account(authorization: Optional[str] = Header(None)):
     }
 
 
+@api.get("/mascot/settings")
+async def mascot_get(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    return {
+        "show_mascot": user.get("show_mascot", True),
+        "dismissed_contexts": user.get("mascot_dismissed", []),
+    }
+
+
+@api.post("/mascot/settings")
+async def mascot_set(payload: MascotSettingsBody, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"show_mascot": bool(payload.show_mascot)}},
+    )
+    return {"show_mascot": bool(payload.show_mascot)}
+
+
+@api.post("/mascot/dismiss")
+async def mascot_dismiss(payload: MascotDismissBody, authorization: Optional[str] = Header(None)):
+    """Record a context-specific dismissal so we don't nag the user again."""
+    user = await get_current_user(authorization)
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$addToSet": {"mascot_dismissed": payload.context}},
+    )
+    return {"ok": True, "context": payload.context}
+
+
 # ============================================================
 # Subscription / Billing
 # ============================================================
+def _plan_catalog() -> dict:
+    """Static plan catalog. Prices are cents; Stripe products/prices are
+    created lazily on first checkout using `lookup_key` to stay idempotent."""
+    return {
+        "monthly": {
+            "id": "monthly",
+            "name": "Handy-Andy Pro (Monthly)",
+            "interval": "month",
+            "amount_cents": int(round(PRO_MONTHLY_USD * 100)),
+            "amount_display": f"${PRO_MONTHLY_USD:.2f}",
+            "period_display": "per month",
+            "lookup_key": "handy_andy_pro_monthly_v1",
+        },
+        "annual": {
+            "id": "annual",
+            "name": "Handy-Andy Pro (Annual)",
+            "interval": "year",
+            "amount_cents": int(round(PRO_ANNUAL_USD * 100)),
+            "amount_display": f"${PRO_ANNUAL_USD:.2f}",
+            "period_display": "per year",
+            "monthly_equivalent": f"${PRO_ANNUAL_MONTHLY_EQUIV:.2f}",
+            "savings_pct": PRO_ANNUAL_SAVINGS_PCT,
+            "lookup_key": "handy_andy_pro_annual_v1",
+        },
+    }
+
+
+async def _get_or_create_price(plan: dict) -> str:
+    """Return an existing Stripe Price by `lookup_key`, creating product+price
+    on first request. Safe to call concurrently — Stripe rejects duplicate
+    lookup_keys so the second create raises and we re-fetch."""
+    if not STRIPE_API_KEY:
+        raise HTTPException(status_code=503, detail="Billing is not configured on this server")
+    try:
+        prices = stripe.Price.list(lookup_keys=[plan["lookup_key"]], active=True, limit=1)
+        if prices.data:
+            return prices.data[0].id
+        product = stripe.Product.create(
+            name=plan["name"],
+            metadata={"lookup_key": plan["lookup_key"], "app": "handy_andy"},
+        )
+        price = stripe.Price.create(
+            product=product.id,
+            unit_amount=plan["amount_cents"],
+            currency="usd",
+            recurring={"interval": plan["interval"]},
+            lookup_key=plan["lookup_key"],
+            metadata={"plan_id": plan["id"]},
+        )
+        return price.id
+    except stripe.error.StripeError as e:  # type: ignore[attr-defined]
+        # Race: another worker created it — re-fetch.
+        try:
+            prices = stripe.Price.list(lookup_keys=[plan["lookup_key"]], active=True, limit=1)
+            if prices.data:
+                return prices.data[0].id
+        except Exception:
+            pass
+        logger.exception("Stripe price provisioning failed: %s", e)
+        raise HTTPException(status_code=502, detail="Billing provisioning failed")
+
+
+def _trial_days_remaining(user: dict) -> int:
+    trial_end = user.get("trial_end_date")
+    if not trial_end:
+        return 0
+    if isinstance(trial_end, str):
+        try:
+            trial_end = datetime.fromisoformat(trial_end.replace("Z", "+00:00"))
+        except Exception:
+            return 0
+    if trial_end.tzinfo is None:
+        trial_end = trial_end.replace(tzinfo=timezone.utc)
+    remaining = (trial_end - datetime.now(timezone.utc)).total_seconds()
+    return max(0, int((remaining + 86399) // 86400))  # round up whole days
+
+
+def _in_trial(user: dict) -> bool:
+    if user.get("stripe_subscription_status") == "active":
+        return False
+    return _trial_days_remaining(user) > 0
+
+
+@api.get("/subscription/plans")
+async def subscription_plans():
+    """Public — used by the pricing screen."""
+    return {
+        "plans": list(_plan_catalog().values()),
+        "trial_days": TRIAL_DAYS,
+        "free_tier": {
+            "ai_scans_per_month": FREE_TIER_AI_LIMIT,
+            "job_limit": FREE_TIER_JOB_LIMIT,
+        },
+    }
+
+
 @api.get("/subscription/status")
 async def subscription_status(authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
     await _ensure_user_billing_fields(user)
     await _ensure_monthly_counter(user)
+    is_active = user.get("stripe_subscription_status") == "active"
+    in_trial = _in_trial(user)
     return {
-        "status": user.get("stripe_subscription_status", "none"),
+        "status": user.get("stripe_subscription_status", "trialing" if in_trial else "none"),
         "trial_end_date": user.get("trial_end_date"),
-        "current_tier": "pro" if _is_pro_or_trialing(user) else "free",
+        "trial_days_remaining": _trial_days_remaining(user),
+        "in_trial": in_trial,
+        "current_tier": "pro" if (is_active or in_trial) else "free",
         "ai_scan_count_this_month": user.get("ai_scan_count_this_month", 0),
         "ai_limit_free": FREE_TIER_AI_LIMIT,
         "job_limit_free": FREE_TIER_JOB_LIMIT,
-        "is_pro": _is_pro_or_trialing(user),
-        "price_usd": PRO_PRICE_USD,
+        "is_pro": is_active or in_trial,
+        "monthly_price_usd": PRO_MONTHLY_USD,
+        "annual_price_usd": PRO_ANNUAL_USD,
+        "cancel_at_period_end": bool(user.get("cancel_at_period_end")),
     }
 
 
 @api.post("/subscription/checkout")
 async def subscription_checkout(payload: CheckoutBody, authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
+    # `payload.job_id` is repurposed here as the plan id ("monthly" | "annual").
+    plan_id = (payload.job_id or "monthly").lower()
+    catalog = _plan_catalog()
+    if plan_id not in catalog:
+        raise HTTPException(status_code=400, detail="Invalid plan. Choose 'monthly' or 'annual'.")
+    plan = catalog[plan_id]
+
     customer_id = user.get("stripe_customer_id")
     if not customer_id:
         try:
             customer = stripe.Customer.create(
-                email=user["email"], name=user.get("name"), metadata={"user_id": user["user_id"]}
+                email=user["email"], name=user.get("name"),
+                metadata={"user_id": user["user_id"]},
             )
             customer_id = customer.id
             await db.users.update_one(
@@ -1186,29 +1338,30 @@ async def subscription_checkout(payload: CheckoutBody, authorization: Optional[s
             logger.exception("Stripe customer create failed: %s", e)
             raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
 
+    price_id = await _get_or_create_price(plan)
     origin = payload.return_origin.rstrip("/")
     success_url = f"{origin}/billing/success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/billing/cancel"
+
+    # Trial without card: users get 14 days free BEFORE ever visiting checkout.
+    # If they still have trial days left, honor the remaining count so we do
+    # not stack a second free trial on top; if trial exhausted, no trial in
+    # checkout (they upgrade immediately).
+    remaining = _trial_days_remaining(user)
+    sub_data: dict = {"metadata": {"user_id": user["user_id"], "plan_id": plan_id}}
+    if remaining > 0:
+        sub_data["trial_period_days"] = remaining
 
     try:
         session = stripe.checkout.Session.create(
             customer=customer_id,
             mode="subscription",
-            line_items=[
-                {
-                    "quantity": 1,
-                    "price_data": {
-                        "currency": "usd",
-                        "recurring": {"interval": "month"},
-                        "unit_amount": int(PRO_PRICE_USD * 100),
-                        "product_data": {"name": "Handy-Andy Pro"},
-                    },
-                }
-            ],
-            subscription_data={"trial_period_days": TRIAL_DAYS, "metadata": {"user_id": user["user_id"]}},
+            line_items=[{"price": price_id, "quantity": 1}],
+            subscription_data=sub_data,
+            allow_promotion_codes=True,
             success_url=success_url,
             cancel_url=cancel_url,
-            metadata={"user_id": user["user_id"]},
+            metadata={"user_id": user["user_id"], "plan_id": plan_id},
         )
     except Exception as e:
         logger.exception("Stripe checkout create failed: %s", e)
@@ -1216,12 +1369,30 @@ async def subscription_checkout(payload: CheckoutBody, authorization: Optional[s
     return {"checkout_url": session.url, "session_id": session.id}
 
 
+@api.post("/subscription/portal")
+async def subscription_portal(payload: CheckoutBody, authorization: Optional[str] = Header(None)):
+    """Return a Stripe Billing Portal URL so users can manage / cancel /
+    swap plans without leaving the app. Requires a Stripe customer."""
+    user = await get_current_user(authorization)
+    customer_id = user.get("stripe_customer_id")
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="No billing account yet — upgrade first.")
+    origin = payload.return_origin.rstrip("/")
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id, return_url=f"{origin}/settings",
+        )
+    except Exception as e:
+        logger.exception("Stripe portal create failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+    return {"portal_url": session.url}
+
+
 @api.post("/subscription/cancel")
 async def subscription_cancel(authorization: Optional[str] = Header(None)):
     user = await get_current_user(authorization)
     sub_id = user.get("stripe_subscription_id")
     if not sub_id:
-        # No active Stripe sub — just mark canceled locally (trial reset)
         await db.users.update_one(
             {"user_id": user["user_id"]},
             {"$set": {"stripe_subscription_status": "canceled", "current_tier": "free"}},
@@ -1238,9 +1409,28 @@ async def subscription_cancel(authorization: Optional[str] = Header(None)):
     return {"status": sub.status, "cancel_at_period_end": True}
 
 
+@api.post("/subscription/reactivate")
+async def subscription_reactivate(authorization: Optional[str] = Header(None)):
+    """Reverse a pending cancellation (cancel_at_period_end=False)."""
+    user = await get_current_user(authorization)
+    sub_id = user.get("stripe_subscription_id")
+    if not sub_id:
+        raise HTTPException(status_code=400, detail="No subscription to reactivate")
+    try:
+        sub = stripe.Subscription.modify(sub_id, cancel_at_period_end=False)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Stripe error: {e}")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"stripe_subscription_status": sub.status, "cancel_at_period_end": False}},
+    )
+    return {"status": sub.status, "cancel_at_period_end": False}
+
+
 @api.post("/subscription/confirm")
 async def subscription_confirm(session_id: str, authorization: Optional[str] = Header(None)):
-    """Client calls this after returning from Stripe Checkout to refresh status."""
+    """Client calls this after returning from Stripe Checkout to refresh
+    status immediately (webhook still authoritative)."""
     user = await get_current_user(authorization)
     try:
         s = stripe.checkout.Session.retrieve(session_id)
@@ -1257,16 +1447,124 @@ async def subscription_confirm(session_id: str, authorization: Optional[str] = H
             status = "active"
         await db.users.update_one(
             {"user_id": user["user_id"]},
-            {
-                "$set": {
-                    "stripe_subscription_id": sub_id,
-                    "stripe_subscription_status": status,
-                    "current_tier": "pro",
-                }
-            },
+            {"$set": {
+                "stripe_subscription_id": sub_id,
+                "stripe_subscription_status": status,
+                "current_tier": "pro",
+                "cancel_at_period_end": False,
+            }},
         )
         return {"status": status}
     return {"status": "unknown"}
+
+
+# ---------- Stripe Webhook (durable subscription state) ----------
+async def _apply_subscription_state(sub: dict) -> None:
+    """Given a Stripe Subscription payload, sync the user's DB row.
+
+    Trusts subscription.metadata.user_id first (set at checkout), then the
+    customer email as a fallback. Status codes that grant Pro: `trialing`,
+    `active`. Anything else falls back to trial-days-remaining or Free."""
+    user_id = (sub.get("metadata") or {}).get("user_id")
+    query = None
+    if user_id:
+        query = {"user_id": user_id}
+    else:
+        cust_id = sub.get("customer")
+        if cust_id:
+            query = {"stripe_customer_id": cust_id}
+    if not query:
+        logger.warning("Webhook: cannot resolve user for subscription %s", sub.get("id"))
+        return
+    status = sub.get("status") or "unknown"
+    is_pro_status = status in ("trialing", "active")
+    updates: dict = {
+        "stripe_subscription_id": sub.get("id"),
+        "stripe_subscription_status": status,
+        "cancel_at_period_end": bool(sub.get("cancel_at_period_end")),
+    }
+    if is_pro_status:
+        updates["current_tier"] = "pro"
+    else:
+        # Preserve trial access if user still has trial days locally.
+        target = await db.users.find_one(query, {"_id": 0}) or {}
+        if _trial_days_remaining(target) <= 0:
+            updates["current_tier"] = "free"
+    await db.users.update_one(query, {"$set": updates})
+
+
+async def _apply_subscription_deleted(sub: dict) -> None:
+    cust_id = sub.get("customer")
+    query = {"stripe_customer_id": cust_id} if cust_id else None
+    user_id = (sub.get("metadata") or {}).get("user_id")
+    if user_id:
+        query = {"user_id": user_id}
+    if not query:
+        return
+    await db.users.update_one(
+        query,
+        {"$set": {
+            "stripe_subscription_status": "canceled",
+            "current_tier": "free",
+            "cancel_at_period_end": False,
+        }},
+    )
+
+
+@app.post("/api/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """Verified Stripe webhook. Handles:
+       - checkout.session.completed  (trial → active)
+       - customer.subscription.updated / created  (any status change)
+       - customer.subscription.deleted  (final cancel)
+       - invoice.payment_failed  (mark past_due so UI can nudge)"""
+    if not STRIPE_WEBHOOK_SECRET:
+        # Fail closed — never trust unsigned events in production.
+        logger.error("Webhook rejected: STRIPE_WEBHOOK_SECRET not configured")
+        raise HTTPException(status_code=503, detail="Webhook signing not configured")
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except (ValueError, stripe.error.SignatureVerificationError) as e:  # type: ignore[attr-defined]
+        logger.warning("Webhook signature failed: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    # Idempotency guard — never process the same event id twice.
+    event_id = event.get("id")
+    if event_id:
+        try:
+            await db.stripe_events.insert_one({"event_id": event_id, "at": datetime.now(timezone.utc), "type": event.get("type")})
+        except Exception:
+            return {"received": True, "duplicate": True}
+
+    etype = event.get("type") or ""
+    data = event.get("data", {}).get("object", {})
+    try:
+        if etype in ("customer.subscription.created", "customer.subscription.updated"):
+            await _apply_subscription_state(data)
+        elif etype == "customer.subscription.deleted":
+            await _apply_subscription_deleted(data)
+        elif etype == "checkout.session.completed":
+            sub_id = data.get("subscription")
+            uid = (data.get("metadata") or {}).get("user_id")
+            if sub_id:
+                sub = stripe.Subscription.retrieve(sub_id)
+                sub_dict = sub.to_dict() if hasattr(sub, "to_dict") else dict(sub)
+                if uid and "metadata" in sub_dict and not sub_dict["metadata"].get("user_id"):
+                    sub_dict["metadata"]["user_id"] = uid
+                await _apply_subscription_state(sub_dict)
+        elif etype == "invoice.payment_failed":
+            sub_id = data.get("subscription")
+            if sub_id:
+                await db.users.update_one(
+                    {"stripe_subscription_id": sub_id},
+                    {"$set": {"stripe_subscription_status": "past_due"}},
+                )
+    except Exception as e:
+        logger.exception("Webhook handler error for %s: %s", etype, e)
+        # Return 200 anyway so Stripe does not retry a poison event forever.
+    return {"received": True, "type": etype}
 
 
 @api.post("/checkout/parts")
@@ -2084,6 +2382,8 @@ async def _on_start():
             db.audit_log.create_index("timestamp"),
             db.rate_limit.create_index("key"),
             db.rate_limit.create_index("expires_at", expireAfterSeconds=0),
+            db.stripe_events.create_index("event_id", unique=True),
+            db.stripe_events.create_index("at", expireAfterSeconds=60 * 60 * 24 * 30),  # 30-day retention
         )
         # Migration: strip any legacy null usernames so the partial-unique index
         # doesn't collide when a fresh signup lands.

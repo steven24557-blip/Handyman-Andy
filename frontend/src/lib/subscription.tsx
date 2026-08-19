@@ -2,15 +2,19 @@ import React, { createContext, useCallback, useContext, useEffect, useState } fr
 import { api } from './api';
 import { useAuth } from './auth';
 
-type SubStatus = {
-  status: string; // trialing | active | canceled | none
+export type SubStatus = {
+  status: string; // trialing | active | canceled | past_due | none
   trial_end_date: string | null;
+  trial_days_remaining: number;
+  in_trial: boolean;
   current_tier: 'free' | 'pro';
   ai_scan_count_this_month: number;
   ai_limit_free: number;
   job_limit_free: number;
   is_pro: boolean;
-  price_usd: number;
+  monthly_price_usd: number;
+  annual_price_usd: number;
+  cancel_at_period_end?: boolean;
 };
 
 type Ctx = {
@@ -33,7 +37,7 @@ export function SubscriptionProvider({ children }: { children: React.ReactNode }
   const refresh = useCallback(async () => {
     if (!user) { setSub(null); return; }
     try {
-      const s = await api.subStatus();
+      const s = await api.subscriptionStatus();
       setSub(s);
     } catch {}
   }, [user]);
