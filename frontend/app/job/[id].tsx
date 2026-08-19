@@ -45,6 +45,7 @@ import Button from '@/src/components/Button';
 import StatusBadge from '@/src/components/StatusBadge';
 import { api } from '@/src/lib/api';
 import { useSubscription } from '@/src/lib/subscription';
+import { useMascot } from '@/src/lib/mascot';
 import { useAuth } from '@/src/lib/auth';
 import { colors, radius, space, text } from '@/src/lib/theme';
 import * as WebBrowser from 'expo-web-browser';
@@ -61,6 +62,7 @@ export default function JobDetails() {
   const router = useRouter();
   const { user } = useAuth();
   const { sub, showPaywall } = useSubscription();
+  const { showTip } = useMascot();
   const [job, setJob] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
@@ -97,13 +99,23 @@ export default function JobDetails() {
     try {
       const res = await api.getJob(id!);
       setJob(res.job);
+      // Andy: fire once when the technician opens a job that the customer has
+      // now signed. Server-side dismissal keeps this to a single celebration
+      // per user (context is stable, not per-job).
+      if (res.job?.customer_approved_at) {
+        showTip({
+          context: 'first_estimate_approved',
+          title: 'CUSTOMER SIGNED',
+          body: "Estimate approved! Push the parts to checkout and get moving. When the job's done, sync it to your accounting integration in Settings.",
+        });
+      }
     } catch (e: any) {
       Alert.alert('Job not found', e?.message || '');
       router.back();
     } finally {
       setLoading(false);
     }
-  }, [id, router]);
+  }, [id, router, showTip]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -153,6 +165,8 @@ export default function JobDetails() {
     setAnalyzing(true);
     try {
       const res = await api.analyzeJob(beforePhoto.base64, job.description);
+      const previousBomLen = (job?.bom || []).length;
+      const nextBomLen = (res?.bom || []).length;
       const updates: any = {
         tools_suggested: res.tools || [],
         bom: res.bom || [],
@@ -161,6 +175,16 @@ export default function JobDetails() {
       if (res.safety_notes) updates.safety_notes = res.safety_notes;
       const out = await api.updateJob(id!, updates);
       setJob(out.job);
+      // Andy: celebrate the first BOM the user ever sees on this job. `dismiss`
+      // is per-context so this fires at most once per user (dismissed_contexts
+      // tracked server-side).
+      if (previousBomLen === 0 && nextBomLen > 0) {
+        showTip({
+          context: 'first_bom',
+          title: 'BOM READY',
+          body: `I pulled ${nextBomLen} line item${nextBomLen === 1 ? '' : 's'} from that photo. Adjust the markup in Settings to keep your margins tight, then send the estimate to your client.`,
+        });
+      }
     } catch (e: any) {
       if (e?.status === 402) showPaywall(e.message || 'AI quota exhausted.');
       else Alert.alert('AI failed', e?.message || 'Try again');

@@ -1,0 +1,31 @@
+{
+  "summary": "Race-fix VERIFIED. All 5 spec items PASS against the preview host with a fresh dev-login user (mascot_iter9_1787166934@andyhandy.test).\n\n(1) 'first_estimate_approved' dismissal now sticks — opened seeded approved job → CUSTOMER SIGNED bubble shown → tapped 'Don't show again' → server persisted dismissed_contexts=['first_estimate_approved'] → COLD RELOAD of the SAME job did NOT re-show the bubble. This is the exact scenario that failed in iter_8. PASS.\n\n(2) No cross-context leak — with first_estimate_approved dismissed, tapping the FAB still surfaced the 'ASK ANDY / Need a hand?' help bubble, AND navigating to the dashboard with a never-dismissed onboarding context correctly fired 'HEY, I'M ANDY'. Dismissal is properly scoped per-context. PASS.\n\n(3) Queue semantics verified via code review + observed behavior — on cold-load of /job/[id], the job's load() calls showTip synchronously as soon as api.getJob resolves. Previously this raced GET /api/mascot/settings and bypassed the dismissed filter. Now showTip checks settingsLoadedRef and queues into pendingRef when settings haven't loaded; after the async settings fetch completes, the queue is drained through the real enabled+dismissed filters. In our reload test the CUSTOMER SIGNED tip was correctly suppressed even though load() fired first — proving the queue → filter → drop path works when the context is server-side-dismissed. PASS.\n\n(4) Regressions clear — onboarding fires exactly once on fresh dashboard load; help fires via FAB tap; Settings HANDY-ANDY HELPER 'HIDE' toggle switches section to 'OFF — HIDDEN' and mascot-fab disappears from the DOM. Static review confirms safety_low_confidence/safety_failed and diag_low_confidence/diag_failed remain user-gesture-fired and inherit the same guard (either the queue path or the fast path if settings are already loaded). PASS.\n\n(5) No new backend calls introduced. mascot.tsx only touches api.mascotSettings / api.setMascotSettings / api.dismissMascot as before. Confirmed via file inspection. PASS.\n\nNo React Native / Expo deprecated-package findings.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/frontend/tests/seed_mascot_iter9.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "mascot.tsx:66-70 — trio of refs (enabledRef, dismissedRef, settingsLoadedRef, pendingRef) is the right pattern. dismissedRef is updated in both the settings-load effect AND the dismiss() setter, so the ref stays authoritative even after user actions. Good.",
+    "mascot.tsx:113-120 — dismiss() updates dismissedRef inside the setter callback (before the async POST). This means an immediate follow-up showTip on the same context in the same tick would already see the dismissed value from the ref — no need to wait on the network. Nice.",
+    "mascot.tsx:91-99 — queue drain only surfaces the FIRST still-eligible tip and breaks. That matches spec ('fire exactly once if not dismissed'). If multiple screens fire while offline-settings-load hangs, they get correctly de-noised to one bubble on load.",
+    "mascot.tsx:88 — settingsLoadedRef is set to true even in the catch branch (empty catch). Correct: if the settings fetch fails we still want to un-block showTip rather than silently swallow every future tip.",
+    "mascot.tsx:72-77 — sign-out path resets settingsLoadedRef=false, enabledRef=true, dismissedRef=[]. Correct — a subsequent sign-in triggers a fresh settings fetch and the pendingRef queue path re-activates."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A (frontend-only re-verification)",
+    "frontend": "5/5 spec items PASS (100%)"
+  },
+  "seed_data_creation": "One dev-login user (mascot_iter9_1787166934@andyhandy.test) with 4 auto-seeded jobs; two jobs manually patched via pymongo to set customer_approved_at. All test data (users + jobs + sessions) purged in teardown.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Regression suite for the mascot dismissal race: (a) dev-login secret is `andy_01b0fmH1hvFa3gZFz_SDYQvVchp_t5jzBUIKz6kFH5s`, (b) seed helper at /app/frontend/tests/seed_mascot_iter9.py prints TOKEN + JOB_ID after patching customer_approved_at, (c) web AsyncStorage shim requires localStorage.setItem('andy_session_token', JSON.stringify(TOKEN)) BEFORE any Expo route loads, (d) key testIDs: mascot-bubble, mascot-dismiss-forever, mascot-fab, mascot-close, mascot-toggle-btn. If regressing this bug: repro by (1) reverting mascot.tsx to closure-based dismissed filter, (2) run seed, (3) navigate to /job/<id> to see bubble, (4) dismiss, (5) hard reload — bubble reappears iff the race is unfixed.",
+  "rca_of_issue": "The iter_8 bug had two root causes now both fixed in /app/frontend/src/lib/mascot.tsx:\n  Cause 1 — stale closure over `dismissed` state array. showTip (useCallback) captured `dismissed` at render time; when a job page load() fired showTip BEFORE the async settings fetch resolved, `dismissed` was still [] and the guard was bypassed. Mitigation: dismissedRef is now the source of truth read inside showTip (line 131).\n  Cause 2 — no signal that settings had loaded. Even with the ref fix, a tip fired before settings arrived would still be dropped because dismissedRef was []. Mitigation: settingsLoadedRef gates showTip (line 126); tips fired pre-load are pushed into pendingRef and replayed inside the settings-fetch .then, at which point dismissedRef is populated and the filter works correctly.\n  Verified end-to-end: on cold reload of a permanently-dismissed approved job, the queue path drops the tip; on cold reload where the context was NOT dismissed, the queue drains and surfaces the tip once."
+}

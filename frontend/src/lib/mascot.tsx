@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { HelpCircle, X } from 'lucide-react-native';
@@ -58,19 +58,51 @@ export function MascotProvider({ children }: { children: React.ReactNode }) {
   const [expanded, setExpanded] = useState(false);
   const insets = useSafeAreaInsets();
 
+  // Refs mirror state so `showTip` (a stable useCallback consumed by other
+  // screens) always sees the latest values. Without this, `showTip` closes
+  // over the initial empty `dismissed` list and a race between the async
+  // settings fetch and a synchronous `showTip` from a screen `load()` handler
+  // would let dismissed contexts pop again on reload.
+  const enabledRef = useRef(true);
+  const dismissedRef = useRef<string[]>([]);
+  const settingsLoadedRef = useRef(false);
+  // Queue tips that fire before settings finish loading — replay after load.
+  const pendingRef = useRef<{ tip: MascotTip; force?: boolean }[]>([]);
+
   useEffect(() => {
-    if (!user) { setEnabledState(true); setDismissed([]); return; }
+    if (!user) {
+      settingsLoadedRef.current = false;
+      setEnabledState(true); enabledRef.current = true;
+      setDismissed([]); dismissedRef.current = [];
+      return;
+    }
     (async () => {
       try {
         const r = await api.mascotSettings();
         setEnabledState(!!r.show_mascot);
-        setDismissed(r.dismissed_contexts || []);
+        enabledRef.current = !!r.show_mascot;
+        const list = r.dismissed_contexts || [];
+        setDismissed(list);
+        dismissedRef.current = list;
       } catch {}
+      settingsLoadedRef.current = true;
+      // Replay any tips that were requested during the fetch, applying the
+      // real (now-loaded) enabled + dismissed filters.
+      const queued = pendingRef.current;
+      pendingRef.current = [];
+      for (const q of queued) {
+        if (!enabledRef.current) continue;
+        if (!q.force && dismissedRef.current.includes(q.tip.context)) continue;
+        setTip(q.tip);
+        setExpanded(true);
+        break; // only surface the first still-eligible tip
+      }
     })();
   }, [user]);
 
   const setEnabled = useCallback(async (v: boolean) => {
     setEnabledState(v);
+    enabledRef.current = v;
     if (!v) {
       setTip(null);
       setExpanded(false);
@@ -79,19 +111,30 @@ export function MascotProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const dismiss = useCallback(async (context: string) => {
-    setDismissed((d) => (d.includes(context) ? d : [...d, context]));
+    setDismissed((d) => {
+      const next = d.includes(context) ? d : [...d, context];
+      dismissedRef.current = next;
+      return next;
+    });
     try { await api.dismissMascot(context); } catch {}
   }, []);
 
   const showTip = useCallback((next: MascotTip, opts?: { force?: boolean }) => {
-    if (!enabled) return;
-    if (!opts?.force && dismissed.includes(next.context)) return;
+    // Queue until we know the user's real preferences — otherwise a `load()`
+    // handler firing before the async settings fetch resolves would bypass
+    // the dismissal filter and re-surface a permanently-hidden tip.
+    if (!settingsLoadedRef.current) {
+      pendingRef.current.push({ tip: next, force: opts?.force });
+      return;
+    }
+    if (!enabledRef.current) return;
+    if (!opts?.force && dismissedRef.current.includes(next.context)) return;
     setTip(next);
     setExpanded(true);
     if (next.transient) {
       setTimeout(() => setExpanded(false), 6500);
     }
-  }, [dismissed, enabled]);
+  }, []);
 
   const hideTip = useCallback(() => setExpanded(false), []);
 

@@ -18,6 +18,7 @@ import { Camera, MapPin, AlertOctagon, ShieldCheck, ShieldAlert, Shield } from '
 import FadeInView from '@/src/components/FadeInView';
 import Button from '@/src/components/Button';
 import { api } from '@/src/lib/api';
+import { useMascot } from '@/src/lib/mascot';
 import { colors, radius, space, text } from '@/src/lib/theme';
 
 type Eval = {
@@ -40,6 +41,7 @@ export default function SafetyScreen() {
   const [imgB64, setImgB64] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<Eval>(null);
+  const { showTip } = useMascot();
 
   const pickImage = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -68,8 +70,29 @@ export default function SafetyScreen() {
         notes: notes || undefined,
       });
       setResult(res);
+      // Andy tip: no photo attached OR result is thin → suggest a re-shoot.
+      // The safety endpoint returns a text-only recommendation when there is
+      // no image; if hazards list is empty AND no recommendation, we treat
+      // that as low-confidence.
+      const thinResult =
+        !imgB64 ||
+        (!res?.hazards?.length && !res?.osha_flags?.length && (res?.recommendation || '').length < 20);
+      if (thinResult) {
+        showTip({
+          context: 'safety_low_confidence',
+          title: 'HARD TO CALL',
+          body: !imgB64
+            ? 'For a real evaluation, attach a photo of the site. A quick pic goes a long way.'
+            : 'That shot was too tight or too dark for me to spot hazards. Try a wider frame with better light.',
+        });
+      }
     } catch (e: any) {
       Alert.alert('Evaluation failed', e?.message || 'Try again');
+      showTip({
+        context: 'safety_failed',
+        title: 'HICCUP',
+        body: "The safety eval didn't go through. Check your signal and try again — I'll be right here.",
+      });
     } finally {
       setLoading(false);
     }
