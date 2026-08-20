@@ -1,0 +1,40 @@
+{
+  "summary": "TTL MIGRATION FIX RE-VERIFIED END-TO-END. Total 37/37 backend tests pass (4 new TTL migration + 21 Phase A + 12 Phase B).\n\n(1) MIGRATION CORRECTNESS — Seeded legacy TTL on db.stripe_events.at_1 (expireAfterSeconds=2592000) via pymongo.create_index('at', expireAfterSeconds=2592000), restarted backend via `sudo supervisorctl restart backend`, and confirmed index_information()['at_1'] no longer contains 'expireAfterSeconds' — index survives as {v:2, key:[('at',1)]} (non-TTL). Backend log emits exactly one 'Migrated stripe_events: dropped legacy TTL index at_1' INFO line per restart that saw a legacy TTL. PASS.\n\n(2) IDEMPOTENCY — After the initial strip, ran 3 consecutive `supervisorctl restart backend` cycles. On each restart: (a) backend booted and /api/ returned 200, (b) at_1 index remained TTL-free, (c) backend log shows 'Handy-Andy backend ready' WITHOUT a 'Migrated ...' line (guard `info.get('at_1', {}).get('expireAfterSeconds') is not None` correctly skipped the drop). No OptionsConflict, no crash. PASS.\n\n(3) FRESH DB (NO LEGACY TTL) — Confirmed at_1 non-TTL, restarted backend, verified at_1 unchanged (same 'key' spec, still no expireAfterSeconds), and grep'd the backend log window between the two most-recent 'backend ready' lines for 'stripe_events TTL migration skipped' — 0 hits. Migration block runs cleanly with no drop and no warning on a fresh DB. PASS.\n\n(4) REGRESSION — Purged stripe_events + rate_limit before billing suite per agent-to-agent instruction, then ran:\n   • Phase A test_phase_a_auth.py → 21/21 PASS (9.05s) — signup, verify-email, login (email OR username), forgot/reset, dev-login, rate-limit, oauth-invalid-session, dev-jobs-regression.\n   • Phase B test_phase_b_billing.py → 12/12 PASS (6.69s) — plans catalog, subscription/status w/ trial fields, checkout monthly+annual idempotent, portal + reactivate guards, webhook (no-sig 400, bad-sig 400, active+deleted+duplicate 200), mascot settings/dismiss round-trip.\n\nFinal db.stripe_events.index_information() at end of run: {'_id_':..., 'event_id_1':{unique:True}, 'at_1':{v:2, key:[('at',1)]}} — TTL-free and stable through the entire regression suite (Stripe webhook writes did NOT reintroduce the TTL because server.py:2396 create_index('at') has no expireAfterSeconds arg and the pre-gather migration already stripped the legacy option).\n\nLog audit confirms exactly the expected behaviour: 4 'Migrated stripe_events: dropped legacy TTL index at_1' lines total (matching the 4 seed→restart cycles across the 2 seeded-test methods) and 0 lines during the 3 idempotency restarts + the fresh-DB restart. No 'stripe_events TTL migration skipped: <err>' warnings anywhere.\n\nThe fix at server.py L2365-2373 is correctly placed BEFORE the create_index gather, so a legacy TTL is dropped first and then create_index('at') at L2396 recreates a fresh non-TTL index — no OptionsConflict swallow risk.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_ttl_migration.py",
+    "/app/backend/tests/test_phase_a_auth.py",
+    "/app/backend/tests/test_phase_b_billing.py",
+    "/app/test_reports/pytest/pytest_iter12_ttl.xml",
+    "/app/test_reports/pytest/pytest_iter12_phasea.xml",
+    "/app/test_reports/pytest/pytest_iter12_phaseb.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py:2365-2373 — Migration is correctly placed BEFORE the asyncio.gather(create_index...) block, so legacy TTL is stripped before create_index('at') would otherwise trigger OptionsConflict. The `expireAfterSeconds is not None` guard makes the drop restart-idempotent (verified across 3 consecutive restarts + fresh-DB restart).",
+    "server.py:2373 — Broad `except Exception` with logger.warning is the right call here: a migration failure must not brick startup (rest of gather + app boot still proceed). Consider adding the exception type to the log for future debugging.",
+    "server.py:2396 — create_index('at') has no expireAfterSeconds; combined with the pre-gather migration, this permanently pins the index to non-TTL semantics. Verified: after 4 seeded-TTL cycles + 3 idempotent restarts + full billing suite (which writes to stripe_events via the signed webhook test), index_information() still reports at_1 without expireAfterSeconds.",
+    "Test coverage gap (optional): consider adding a MongoDB collMod-based alternative (`db.command('collMod', 'stripe_events', index={'keyPattern': {'at':1}, 'expireAfterSeconds': 0})`) as a fallback path if the drop_index approach ever hits a version-specific edge case — but not required, current fix is correct and battle-tested here."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_ttl_migration.py (new — 4 pytest cases across seeded / idempotent / fresh-DB scenarios)"
+  ],
+  "success_rate": {
+    "backend": "37/37 (100%) — 4 TTL migration + 21 Phase A + 12 Phase B",
+    "frontend": "N/A (backend only per review_request.testing_type)"
+  },
+  "seed_data_creation": "Legacy TTL index at_1 (expireAfterSeconds=2592000) was seeded twice on db.stripe_events in TestTTLMigrationSeeded and stripped by backend restart. stripe_events + rate_limit were purged before running the billing suite per agent-to-agent note. Phase A signup created ~5 throwaway iter12_<ts>@andyhandy.test users via the standard fixtures. No production/seeded data was modified.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "TTL migration fix is fully verified: seeded legacy TTL is dropped on restart, subsequent restarts are true no-ops (guard suppresses the drop), and fresh-DB restarts do not crash or emit skip-warnings. The new test file /app/backend/tests/test_ttl_migration.py is a reusable regression harness — future testing agents can run it standalone with `EXPO_PUBLIC_BACKEND_URL=<url> pytest backend/tests/test_ttl_migration.py -v` after any startup-index change. IMPORTANT: pytest requires `EXPO_PUBLIC_BACKEND_URL` (or `EXPO_BACKEND_URL`) to be exported into the shell — the phase suites read it from os.environ, and frontend/.env is not auto-loaded by pytest. Full regression command:\n```\ncd /app && EXPO_PUBLIC_BACKEND_URL=\"https://jobsite-assistant.preview.emergentagent.com\" pytest backend/tests/test_ttl_migration.py backend/tests/test_phase_a_auth.py backend/tests/test_phase_b_billing.py -v\n```\nAll other findings from iteration_11.json (Apple removal, login UI, mascot, accounting-hidden, hardcoded-host removal) remain resolved and were not re-verified this iteration since only backend testing was requested.",
+  "rca_of_issue": "Not applicable — this iteration was a re-verification of the fix from iteration_11's CRITICAL finding. Fix RCA (from iter_11): legacy `at_1` with expireAfterSeconds=2592000 persisted from an earlier deploy that called create_index('at', expireAfterSeconds=30*86400). MongoDB's create_index is a no-op on existing key spec, so the current TTL-less create_index('at') at L2396 did NOT strip the option — after 30d, webhook idempotency records would auto-purge and enable double-processing. Fix as shipped at L2365-2373: index_information() → check at_1.expireAfterSeconds → drop_index('at_1'), guarded by broad try/except so startup never fails on a migration hiccup. This iteration proves: (a) it drops when needed, (b) it doesn't drop when not needed, (c) it's idempotent across arbitrary restart counts, (d) it doesn't crash on a fresh DB, and (e) it doesn't interfere with the rest of the startup gather or downstream Stripe webhook writes."
+}

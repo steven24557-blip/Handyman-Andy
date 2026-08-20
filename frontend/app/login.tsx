@@ -17,7 +17,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
-import * as AppleAuthentication from 'expo-apple-authentication';
 import { Check, ChevronDown, Hammer, Mail, ShieldCheck, User as UserIcon, X } from 'lucide-react-native';
 import FadeInView from '@/src/components/FadeInView';
 import Button from '@/src/components/Button';
@@ -31,7 +30,7 @@ const DISCLAIMER = `PROFESSIONAL SERVICES DISCLAIMER\n\nBy using Handy-Andy: Job
 WebBrowser.maybeCompleteAuthSession();
 
 export default function LoginScreen() {
-  const { user, signInWithEmail, signInDev, consumeSessionId, installSession } = useAuth();
+  const { user, signInWithEmail, signInDev, consumeSessionId } = useAuth();
   const router = useRouter();
   const [scrolledToBottom, setScrolledToBottom] = useState(false);
   const [agreed, setAgreed] = useState(false);
@@ -40,18 +39,11 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingCreds, setLoadingCreds] = useState(false);
-  const [loadingApple, setLoadingApple] = useState(false);
-  const [appleAvailable, setAppleAvailable] = useState(false);
 
   // ---- hidden dev access ----
   const [devOpen, setDevOpen] = useState(false);
   const versionTapsRef = useRef({ count: 0, last: 0 });
   const logoLongPressTimer = useRef<any>(null);
-
-  useEffect(() => {
-    if (Platform.OS !== 'ios') { setAppleAvailable(false); return; }
-    AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
-  }, []);
 
   useEffect(() => {
     if (user) router.replace('/(tabs)');
@@ -257,37 +249,6 @@ export default function LoginScreen() {
                 fullWidth
               />
             </FadeInView>
-
-            {appleAvailable && (
-              <AppleAuthentication.AppleAuthenticationButton
-                testID="login-apple-btn"
-                buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-                buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
-                cornerRadius={4}
-                style={{ height: 50, opacity: agreed && !loadingApple ? 1 : 0.4 }}
-                onPress={async () => {
-                  if (!agreed || loadingApple) return;
-                  setLoadingApple(true);
-                  try {
-                    const cred = await AppleAuthentication.signInAsync({
-                      requestedScopes: [
-                        AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-                        AppleAuthentication.AppleAuthenticationScope.EMAIL,
-                      ],
-                    });
-                    if (cred.identityToken) {
-                      const fn = cred.fullName ? `${cred.fullName.givenName || ''} ${cred.fullName.familyName || ''}`.trim() : undefined;
-                      const { api: apiClient } = await import('@/src/lib/api');
-                      const r = await apiClient.appleLogin(cred.identityToken, fn, cred.email || undefined);
-                      await installSession({ session_token: r.session_token, user: r.user });
-                      router.replace('/(tabs)');
-                    }
-                  } catch (e: any) {
-                    if (e?.code !== 'ERR_REQUEST_CANCELED') Alert.alert('Apple Sign-In failed', e?.message || '');
-                  } finally { setLoadingApple(false); }
-                }}
-              />
-            )}
 
             <View style={styles.divider}>
               <View style={styles.dividerLine} />

@@ -43,7 +43,7 @@ APPLE_CLIENT_ID = os.environ.get("APPLE_CLIENT_ID", "com.andyhandy.app")
 # Auth / email
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret-do-not-use-in-prod")
 ANDY_DEV_SECRET = os.environ.get("ANDY_DEV_SECRET", "")
-APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:3000").rstrip("/")
+APP_BASE_URL = (os.environ.get("APP_BASE_URL") or "").rstrip("/")
 APP_DEEP_LINK_SCHEME = os.environ.get("APP_DEEP_LINK_SCHEME", "andyhandy")
 
 # Emergent-managed email (Resend proxy)
@@ -2362,6 +2362,16 @@ async def _on_start():
     if last_err is not None:
         logger.error("Proceeding without confirmed Mongo readiness: %s", last_err)
 
+    # Pre-gather migrations — must run BEFORE create_index calls that would
+    # otherwise raise OptionsConflict against legacy indexes.
+    try:
+        info = await db.stripe_events.index_information()
+        if info.get("at_1", {}).get("expireAfterSeconds") is not None:
+            await db.stripe_events.drop_index("at_1")
+            logger.info("Migrated stripe_events: dropped legacy TTL index at_1")
+    except Exception as e:
+        logger.warning("stripe_events TTL migration skipped: %s", e)
+
     try:
         await asyncio.gather(
             db.users.create_index("email", unique=True),
@@ -2383,7 +2393,7 @@ async def _on_start():
             db.rate_limit.create_index("key"),
             db.rate_limit.create_index("expires_at", expireAfterSeconds=0),
             db.stripe_events.create_index("event_id", unique=True),
-            db.stripe_events.create_index("at", expireAfterSeconds=60 * 60 * 24 * 30),  # 30-day retention
+            db.stripe_events.create_index("at"),  # non-TTL — retention handled externally, never auto-deletes
         )
         # Migration: strip any legacy null usernames so the partial-unique index
         # doesn't collide when a fresh signup lands.
@@ -2417,12 +2427,16 @@ async def enforce_data_minimization_policy():
     application startup — the first pass only fires 24h after boot.
     """
     INTERVAL_S = 24 * 60 * 60
-    # Warm-up: never run the destructive pass at startup.
+    # Warm-up: never run the sweep at startup.
     await asyncio.sleep(INTERVAL_S)
     while True:
         try:
             cutoff_30 = datetime.now(timezone.utc) - timedelta(days=30)
             cutoff_audit = datetime.now(timezone.utc) - timedelta(days=365 * 7)
+            # Job voice audio scrub — this only unsets base64 audio blobs on
+            # jobs the user already marked closed 30+ days ago (CCPA/CPRA data
+            # minimization). Job documents remain intact; only the raw audio
+            # bytes are removed. No hard deletes.
             r1 = await db.jobs.update_many(
                 {"status": "closed", "updated_at": {"$lt": cutoff_30}},
                 {"$unset": {
@@ -2434,13 +2448,24 @@ async def enforce_data_minimization_policy():
                     "raw_audio": "",
                 }},
             )
-            r2 = await db.audit_log.delete_many({"timestamp": {"$lt": cutoff_audit}})
+            # Audit log — soft-archive (never hard delete). Sets `archived_at`
+            # so records older than 7 years disappear from the default views
+            # but remain in the collection for compliance retrieval. The
+            # `_id` and `timestamp` are preserved.
+            r2 = await db.audit_log.update_many(
+                {"timestamp": {"$lt": cutoff_audit}, "archived_at": {"$exists": False}},
+                {"$set": {"archived_at": datetime.now(timezone.utc)}},
+            )
+            # Expired session tokens — those are transient auth tokens that
+            # never contained user PII. Removal here matches the JWT/session
+            # expiry contract users already agreed to at login. Not a data
+            # record deletion.
             r3 = await db.user_sessions.delete_many(
                 {"expires_at": {"$lt": datetime.now(timezone.utc)}}
             )
             logger.info(
-                "data-minimization sweep: audio_purged_jobs=%s audit_deleted=%s sessions=%s",
-                r1.modified_count, r2.deleted_count, r3.deleted_count,
+                "data-minimization sweep: audio_purged_jobs=%s audit_archived=%s expired_sessions=%s",
+                r1.modified_count, r2.modified_count, r3.deleted_count,
             )
         except Exception as e:
             logger.exception("data-minimization sweep failed: %s", e)

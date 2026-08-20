@@ -131,7 +131,7 @@ export default function SettingsScreen() {
                   const origin =
                     typeof window !== 'undefined' && window.location
                       ? window.location.origin
-                      : (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://jobsite-assistant.emergent.host');
+                      : (process.env.EXPO_PUBLIC_BACKEND_URL || '');
                   const r = await api.subscriptionPortal(origin);
                   if (typeof window !== 'undefined') window.location.href = r.portal_url;
                   else {

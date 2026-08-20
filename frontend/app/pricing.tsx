@@ -56,7 +56,7 @@ export default function PricingScreen() {
       const origin =
         Platform.OS === 'web'
           ? window.location.origin
-          : (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://jobsite-assistant.emergent.host');
+          : (process.env.EXPO_PUBLIC_BACKEND_URL || '');
       const r = await api.subscriptionCheckout(selected, origin);
       if (Platform.OS === 'web') {
         window.location.href = r.checkout_url;
@@ -80,7 +80,7 @@ export default function PricingScreen() {
       const origin =
         Platform.OS === 'web'
           ? window.location.origin
-          : (process.env.EXPO_PUBLIC_BACKEND_URL || 'https://jobsite-assistant.emergent.host');
+          : (process.env.EXPO_PUBLIC_BACKEND_URL || '');
       const r = await api.subscriptionPortal(origin);
       if (Platform.OS === 'web') window.location.href = r.portal_url;
       else await Linking.openURL(r.portal_url);
